@@ -1,7 +1,7 @@
 import axios from 'axios';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
-// const API_URL = 'https://smart-exam-hall-entry-system.onrender.com/api';
+// const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+const API_URL = 'https://smart-exam-hall-entry-system.onrender.com/api';
 
 /**
  * Base URL of the backend server (without the /api suffix) — used for
