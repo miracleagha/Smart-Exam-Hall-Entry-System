@@ -1,12 +1,19 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { resolveMediaUrl } from '../../services/api';
 import { QrCode, LayoutDashboard, History, User, LogOut, BookOpen } from 'lucide-react';
 
 export const StudentLayout = () => {
-  const { user, logout } = useAuth();
+  const { user, logout, refreshUser } = useAuth();
   const navigate = useNavigate();
+
+  // Pull the freshest student record whenever the layout mounts. This is
+  // how the student sees a passport photo the institution uploaded after
+  // login — without it, the UI is stuck reading the stale localStorage copy.
+  useEffect(() => {
+    refreshUser?.();
+  }, [refreshUser]);
 
   const handleLogout = async () => {
     await logout();
