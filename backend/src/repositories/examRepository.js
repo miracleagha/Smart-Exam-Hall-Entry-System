@@ -75,16 +75,45 @@ class ExamRepository {
 
   async findAvailableForStudent(institutionId, studentId, department, level) {
     // Exams the student is *eligible* to register for: same institution,
-    // department + level match, still open (upcoming or active), not past,
-    // and the student hasn't already registered.
-    return Exam.find({
+    // department + level match (fuzzy, case-insensitive so trivial typing
+    // differences don't hide exams), still open (upcoming or active), not
+    // past, and the student hasn't already registered.
+    const escapeRegex = (v) => (v || '').toString().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const norm = (v) => (v || '').toString().trim();
+    const digits = (v) => (v || '').toString().replace(/\D/g, '');
+
+    const deptNorm = norm(department);
+    const levelNorm = norm(level);
+    const levelDigits = digits(level);
+
+    // If the student doesn't have a department/level configured, we can't
+    // reliably match exams — return nothing so the UI shows an empty state
+    // rather than misleading rows they can't actually register for.
+    if (!deptNorm || (!levelNorm && !levelDigits)) return [];
+
+    const query = {
       institutionId,
-      department,
-      level,
       status: { $in: ['upcoming', 'active'] },
       examDate: { $gte: new Date(new Date().setHours(0, 0, 0, 0)) },
       registeredStudents: { $ne: studentId },
-    }).sort('examDate');
+      // Case-insensitive whole-string match on department. User input is
+      // escaped so it can't be interpreted as a regex pattern.
+      department: new RegExp(`^\\s*${escapeRegex(deptNorm)}\\s*$`, 'i'),
+    };
+
+    if (levelDigits) {
+      // Match either the exact string case-insensitively OR any level value
+      // that contains the same numeric part (e.g. student "400" matches
+      // exam "400 Level").
+      query.$or = [
+        { level: new RegExp(`^\\s*${escapeRegex(levelNorm)}\\s*$`, 'i') },
+        { level: new RegExp(`(^|\\D)${levelDigits}(\\D|$)`) },
+      ];
+    } else {
+      query.level = new RegExp(`^\\s*${escapeRegex(levelNorm)}\\s*$`, 'i');
+    }
+
+    return Exam.find(query).sort('examDate');
   }
 
   async findRegisteredForStudent(institutionId, studentId) {

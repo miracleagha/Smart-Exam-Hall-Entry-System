@@ -1,9 +1,22 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../services/api';
+import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
-import { BookOpen, MapPin, Calendar, Clock, GraduationCap, CheckCircle2, FileX, Loader2 } from 'lucide-react';
+import {
+  BookOpen,
+  MapPin,
+  Calendar,
+  Clock,
+  GraduationCap,
+  CheckCircle2,
+  FileX,
+  Loader2,
+  RefreshCw,
+  Info,
+} from 'lucide-react';
 
 export const AvailableExams = () => {
+  const { user } = useAuth();
   const { showToast } = useToast();
 
   const [exams, setExams] = useState([]);
@@ -60,9 +73,26 @@ export const AvailableExams = () => {
         <div>
           <h1 className="text-3xl font-black uppercase text-black m-0 tracking-wide">Available Exams</h1>
           <p className="text-sm font-bold text-gray-500 uppercase mt-1">
-            Register for exams offered by your institution. Registration is auto-approved.
+            Exams offered to your department + level. Registration is auto-approved.
           </p>
         </div>
+        <button
+          onClick={loadExams}
+          className="flat-btn bg-white hover:scale-102 flex items-center gap-2 py-2.5 px-4 text-xs font-black uppercase cursor-pointer"
+        >
+          <RefreshCw className="w-4 h-4" />
+          Refresh
+        </button>
+      </div>
+
+      {/* Notice explaining how the list is filtered — makes empty states less confusing. */}
+      <div className="flat-card bg-blue-50 border-black p-3 flex items-start gap-3">
+        <Info className="w-4 h-4 text-flatBlue shrink-0 mt-0.5" />
+        <p className="text-[11px] font-bold text-gray-700 uppercase leading-snug">
+          Matched to <span className="text-black font-black">{user?.department || '—'}</span> /{' '}
+          <span className="text-black font-black">{user?.level || '—'}</span>. If your details look
+          wrong, ask your institution admin to update them.
+        </p>
       </div>
 
       {loading ? (
@@ -74,8 +104,9 @@ export const AvailableExams = () => {
         <div className="flat-card bg-white p-12 text-center border-black">
           <FileX className="w-16 h-16 mx-auto mb-4 text-gray-400" />
           <h3 className="text-xl font-black uppercase text-black">No Exams Available</h3>
-          <p className="text-xs font-bold text-gray-500 uppercase mt-1">
-            There are no exams for you to register for right now. Check back later.
+          <p className="text-xs font-bold text-gray-500 uppercase mt-1 max-w-md mx-auto leading-snug">
+            No exams matching your department and level are open right now. Once your institution
+            schedules one, it will show up here.
           </p>
         </div>
       ) : (

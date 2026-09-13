@@ -35,7 +35,12 @@ export const Exams = () => {
   const [exams, setExams] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filterDept, setFilterDept] = useState('');
-  
+
+  // Suggestions for department / level pulled from the actual student pool
+  // so admins can pick values that match their students exactly.
+  const [departmentOptions, setDepartmentOptions] = useState([]);
+  const [levelOptions, setLevelOptions] = useState([]);
+
   // Modal states
   const [isOpen, setIsOpen] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
@@ -69,8 +74,19 @@ export const Exams = () => {
     }
   };
 
+  const fetchFilterOptions = async () => {
+    try {
+      const opts = await api.students.getFilterOptions();
+      setDepartmentOptions(opts?.departments || []);
+      setLevelOptions(opts?.levels || []);
+    } catch (_err) {
+      // Non-fatal — the form falls back to free-text.
+    }
+  };
+
   useEffect(() => {
     fetchExams();
+    fetchFilterOptions();
   }, []);
 
   const handleCreateSubmit = async (data) => {
@@ -165,10 +181,11 @@ export const Exams = () => {
             onChange={(e) => setFilterDept(e.target.value)}
           >
             <option value="">All Departments</option>
-            <option value="Computer Science">Computer Science</option>
-            <option value="Mathematics">Mathematics</option>
-            <option value="Statistics">Statistics</option>
-            <option value="Physics">Physics</option>
+            {departmentOptions.map((d) => (
+              <option key={d} value={d}>
+                {d}
+              </option>
+            ))}
           </select>
         </div>
         <p className="text-xs font-black uppercase text-gray-500">
@@ -324,40 +341,69 @@ export const Exams = () => {
                 {errors.venue && <p className="text-[10px] text-red-500 font-bold mt-1 uppercase">{errors.venue.message}</p>}
               </div>
 
-              {/* Dept */}
+              {/* Dept — free-text with autocomplete from existing student departments */}
               <div>
-                <label className="block text-xs font-black uppercase tracking-wider mb-1.5 text-black">Department</label>
-                <select className="flat-select text-sm py-2" {...register('department')}>
-                  <option value="Computer Science">Computer Science</option>
-                  <option value="Mathematics">Mathematics</option>
-                  <option value="Statistics">Statistics</option>
-                  <option value="Physics">Physics</option>
-                </select>
-                {errors.department && <p className="text-[10px] text-red-500 font-bold mt-1 uppercase">{errors.department.message}</p>}
+                <label className="block text-xs font-black uppercase tracking-wider mb-1.5 text-black">
+                  Department
+                </label>
+                <input
+                  type="text"
+                  list="exam-dept-options"
+                  className="flat-input text-sm py-2"
+                  placeholder="e.g. Computer Science"
+                  {...register('department')}
+                />
+                <datalist id="exam-dept-options">
+                  {departmentOptions.map((d) => (
+                    <option key={d} value={d} />
+                  ))}
+                </datalist>
+                <p className="text-[9px] font-bold text-gray-400 mt-1 uppercase">
+                  Must match the student's department for them to see this exam.
+                </p>
+                {errors.department && (
+                  <p className="text-[10px] text-red-500 font-bold mt-1 uppercase">
+                    {errors.department.message}
+                  </p>
+                )}
               </div>
 
-              {/* Faculty */}
+              {/* Faculty — free text */}
               <div>
-                <label className="block text-xs font-black uppercase tracking-wider mb-1.5 text-black">Faculty</label>
-                <select className="flat-select text-sm py-2" {...register('faculty')}>
-                  <option value="Science">Science</option>
-                  <option value="Engineering">Engineering</option>
-                  <option value="Arts">Arts</option>
-                  <option value="Social Sciences">Social Sciences</option>
-                </select>
-                {errors.faculty && <p className="text-[10px] text-red-500 font-bold mt-1 uppercase">{errors.faculty.message}</p>}
+                <label className="block text-xs font-black uppercase tracking-wider mb-1.5 text-black">
+                  Faculty
+                </label>
+                <input
+                  type="text"
+                  className="flat-input text-sm py-2"
+                  placeholder="e.g. Science"
+                  {...register('faculty')}
+                />
+                {errors.faculty && (
+                  <p className="text-[10px] text-red-500 font-bold mt-1 uppercase">
+                    {errors.faculty.message}
+                  </p>
+                )}
               </div>
 
               {/* Level */}
               <div>
-                <label className="block text-xs font-black uppercase tracking-wider mb-1.5 text-black">Academic Level</label>
+                <label className="block text-xs font-black uppercase tracking-wider mb-1.5 text-black">
+                  Academic Level
+                </label>
                 <select className="flat-select text-sm py-2" {...register('level')}>
-                  <option value="100 Level">100 Level</option>
-                  <option value="200 Level">200 Level</option>
-                  <option value="300 Level">300 Level</option>
-                  <option value="400 Level">400 Level</option>
-                  <option value="500 Level">500 Level</option>
+                  {(levelOptions.length > 0
+                    ? levelOptions
+                    : ['100 Level', '200 Level', '300 Level', '400 Level', '500 Level']
+                  ).map((l) => (
+                    <option key={l} value={l}>
+                      {l}
+                    </option>
+                  ))}
                 </select>
+                <p className="text-[9px] font-bold text-gray-400 mt-1 uppercase">
+                  Options are drawn from your existing student records.
+                </p>
               </div>
 
               <div className="flex justify-end gap-3 pt-4 border-t-4 border-black">
