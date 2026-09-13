@@ -1,13 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { api } from '../services/api';
+import { api, resolveMediaUrl } from '../services/api';
 import { useToast } from '../context/ToastContext';
 import { Link } from 'react-router-dom';
 import { 
   User, 
   BookOpen, 
   QrCode, 
-  ScanLine,
   CalendarCheck, 
   ArrowRight,
   ShieldCheck,
@@ -69,9 +68,9 @@ export const Dashboard = () => {
         {/* Left Side Accent */}
         <div className="absolute left-0 top-0 bottom-0 w-3 bg-flatBlue border-r-4 border-black" />
         
-        {user?.passportPhoto && (
+        {resolveMediaUrl(user?.passportPhoto) && (
           <img
-            src={user.passportPhoto}
+            src={resolveMediaUrl(user?.passportPhoto)}
             alt="Student Passport"
             className="w-28 h-28 border-4 border-black object-cover shrink-0 ml-4"
           />
@@ -119,12 +118,12 @@ export const Dashboard = () => {
                   to="/my-qr"
                   className="w-full sm:w-auto flat-btn bg-black text-white hover:scale-102 text-xs font-black py-3 px-6 flex items-center justify-center gap-2 uppercase tracking-wider"
                 >
-                  <ScanLine className="w-5 h-5 stroke-[2.5]" />
-                  Scan Entry QR Code
+                  <QrCode className="w-5 h-5 stroke-[2.5]" />
+                  Show My QR Code
                   <ArrowRight className="w-4 h-4" />
                 </Link>
                 <span className="text-[10px] font-bold text-amber-950 uppercase leading-snug">
-                  Scan the QR code displayed at the exam hall entrance for verification.
+                  Present your QR code at the exam hall entrance for verification.
                 </span>
               </div>
             </div>

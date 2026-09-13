@@ -1,16 +1,24 @@
 const studentService = require('../services/studentService');
 const { successResponse } = require('../utils/helpers');
 
+/**
+ * Turn an uploaded multer file into the public URL path we store in the DB.
+ */
+const filePathFromReq = (req) =>
+  req.file ? `/uploads/passports/${req.file.filename}` : null;
+
 class StudentController {
   /**
    * POST /api/students
+   * Accepts JSON or multipart/form-data (optional passportPhoto file).
    */
   async createStudent(req, res, next) {
     try {
       const result = await studentService.createStudent(
         req.body,
         req.user.institutionId,
-        req.user.id
+        req.user.id,
+        filePathFromReq(req)
       );
       return successResponse(res, 'Student created successfully.', result, null, 201);
     } catch (error) {
@@ -96,6 +104,7 @@ class StudentController {
 
   /**
    * PUT /api/students/:id
+   * Accepts JSON or multipart/form-data (optional passportPhoto file).
    */
   async updateStudent(req, res, next) {
     try {
@@ -103,7 +112,8 @@ class StudentController {
         req.params.id,
         req.body,
         req.user.institutionId,
-        req.user.id
+        req.user.id,
+        filePathFromReq(req)
       );
       return successResponse(res, 'Student updated successfully.', student);
     } catch (error) {
@@ -129,6 +139,28 @@ class StudentController {
   }
 
   /**
+   * PUT /api/students/:id/passport
+   * Institution-only endpoint to (re)upload a student's passport photo.
+   */
+  async updatePhoto(req, res, next) {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ success: false, message: 'No file uploaded.' });
+      }
+      const filePath = `/uploads/passports/${req.file.filename}`;
+      const student = await studentService.updateStudentPhoto(
+        req.params.id,
+        filePath,
+        req.user.institutionId,
+        req.user.id
+      );
+      return successResponse(res, 'Passport photo updated.', student);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
    * GET /api/students/me/profile (Student)
    */
   async getMyProfile(req, res, next) {
@@ -141,28 +173,12 @@ class StudentController {
   }
 
   /**
-   * PUT /api/students/me/profile (Student)
+   * PUT /api/students/me/profile (Student — contact info only)
    */
   async updateMyProfile(req, res, next) {
     try {
       const student = await studentService.updateStudentProfile(req.user.id, req.body);
       return successResponse(res, 'Profile updated.', student);
-    } catch (error) {
-      next(error);
-    }
-  }
-
-  /**
-   * PUT /api/students/me/passport (Student)
-   */
-  async uploadPassport(req, res, next) {
-    try {
-      if (!req.file) {
-        return res.status(400).json({ success: false, message: 'No file uploaded.' });
-      }
-      const filePath = `/uploads/passports/${req.file.filename}`;
-      const student = await studentService.updatePassportPhoto(req.user.id, filePath);
-      return successResponse(res, 'Passport photo uploaded.', student);
     } catch (error) {
       next(error);
     }

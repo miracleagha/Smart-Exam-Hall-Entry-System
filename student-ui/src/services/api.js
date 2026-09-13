@@ -1,8 +1,26 @@
 import axios from 'axios';
 
-// const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
-const API_URL = 'https://smart-exam-hall-entry-system.onrender.com/api';
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+// const API_URL = 'https://smart-exam-hall-entry-system.onrender.com/api';
 
+/**
+ * Base URL of the backend server (without the /api suffix) — used for
+ * turning stored file paths like `/uploads/passports/foo.png` into absolute
+ * URLs that the browser can load directly.
+ */
+export const API_ORIGIN = API_URL.replace(/\/api\/?$/, '');
+
+/**
+ * Resolve a stored server path or an already-absolute URL into a fully
+ * qualified URL. Returns null if `pathOrUrl` is falsy.
+ */
+export const resolveMediaUrl = (pathOrUrl) => {
+  if (!pathOrUrl) return null;
+  if (/^https?:\/\//i.test(pathOrUrl)) return pathOrUrl;
+  if (pathOrUrl.startsWith('data:')) return pathOrUrl;
+  if (pathOrUrl.startsWith('/')) return `${API_ORIGIN}${pathOrUrl}`;
+  return `${API_ORIGIN}/${pathOrUrl}`;
+};
 
 const apiClient = axios.create({
   baseURL: API_URL,
@@ -14,7 +32,7 @@ const apiClient = axios.create({
 // Request interceptor — inject JWT access token
 apiClient.interceptors.request.use(
   (config) => {
-    const session = JSON.parse(localStorage.getItem('student_session'));
+    const session = JSON.parse(localStorage.getItem('student_session') || 'null');
     if (session && session.accessToken) {
       config.headers.Authorization = `Bearer ${session.accessToken}`;
     }
@@ -34,7 +52,7 @@ apiClient.interceptors.response.use(
       originalRequest._retry = true;
 
       try {
-        const session = JSON.parse(localStorage.getItem('student_session'));
+        const session = JSON.parse(localStorage.getItem('student_session') || 'null');
         if (session?.refreshToken) {
           const refreshRes = await axios.post(`${API_URL}/auth/refresh-token`, {
             refreshToken: session.refreshToken,
@@ -158,12 +176,19 @@ export const api = {
   },
 
   qrCodes: {
-    getActive: async () => {
-      const res = await apiClient.get('/qrcodes/student/active');
+    /**
+     * Fetch the student's identity QR — the backend auto-generates one on
+     * first call and returns the existing active one on subsequent calls.
+     */
+    getMyQR: async () => {
+      const res = await apiClient.get('/qrcodes/student/my-qr');
       return unwrap(res);
     },
-    verify: async (encryptedPayload) => {
-      const res = await apiClient.post('/qrcodes/student/verify', { encryptedPayload });
+    /**
+     * Force a fresh QR (revokes the current active one).
+     */
+    regenerate: async () => {
+      const res = await apiClient.post('/qrcodes/student/regenerate');
       return unwrap(res);
     },
   },
@@ -182,14 +207,6 @@ export const api = {
     },
     update: async (data) => {
       const res = await apiClient.put('/students/me/profile', data);
-      return unwrap(res);
-    },
-    uploadPassport: async (file) => {
-      const formData = new FormData();
-      formData.append('passportPhoto', file);
-      const res = await apiClient.put('/students/me/passport', formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-      });
       return unwrap(res);
     },
   },

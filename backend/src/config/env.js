@@ -22,11 +22,17 @@ const env = {
   AES_SECRET_KEY: process.env.AES_SECRET_KEY,
   AES_IV: process.env.AES_IV,
 
-  // Resend (Email)
-  RESEND_API_KEY: process.env.RESEND_API_KEY,
-  EMAIL_FROM: process.env.EMAIL_FROM || 'onboarding@resend.dev',
+  // Email (SMTP)
+  SMTP_HOST: process.env.SMTP_HOST || '',
+  SMTP_PORT: parseInt(process.env.SMTP_PORT, 10) || 587,
+  SMTP_SECURE:
+    (process.env.SMTP_SECURE || '').toString().toLowerCase() === 'true',
+  SMTP_USER: process.env.SMTP_USER || '',
+  SMTP_PASS: process.env.SMTP_PASS || '',
+  EMAIL_FROM: process.env.EMAIL_FROM || 'no-reply@smart-hall-entry.local',
+  EMAIL_FROM_NAME: process.env.EMAIL_FROM_NAME || 'Smart Hall Entry',
 
-  // Client URLs
+  // Client URLs (used for email links only — CORS is allow-all)
   CLIENT_URL: process.env.CLIENT_URL || 'http://localhost:5173',
   STUDENT_CLIENT_URL: process.env.STUDENT_CLIENT_URL || 'http://localhost:5174',
 
@@ -35,7 +41,10 @@ const env = {
   LOCK_TIME_MINUTES: parseInt(process.env.LOCK_TIME_MINUTES, 10) || 30,
 
   // QR Code
+  // Legacy exam-hall QR expiry (hours) — kept for backwards compat.
   QR_EXPIRY_HOURS: parseInt(process.env.QR_EXPIRY_HOURS, 10) || 24,
+  // Student identity QR lifetime (days). Defaults to ~1 academic year.
+  STUDENT_QR_EXPIRY_DAYS: parseInt(process.env.STUDENT_QR_EXPIRY_DAYS, 10) || 365,
 
   // Helpers
   isDev() {

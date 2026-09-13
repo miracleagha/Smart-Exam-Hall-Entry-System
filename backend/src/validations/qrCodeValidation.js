@@ -1,34 +1,15 @@
 const { body } = require('express-validator');
 
-const generateQRValidation = [
-  body('studentId')
-    .notEmpty()
-    .withMessage('Student ID is required')
-    .isMongoId()
-    .withMessage('Invalid student ID'),
-  body('examId')
-    .notEmpty()
-    .withMessage('Exam ID is required')
-    .isMongoId()
-    .withMessage('Invalid exam ID'),
-];
-
-const bulkGenerateQRValidation = [
-  body('examId')
-    .notEmpty()
-    .withMessage('Exam ID is required')
-    .isMongoId()
-    .withMessage('Invalid exam ID'),
-];
-
-const verifyQRValidation = [
+const scanStudentQRValidation = [
   body('encryptedPayload')
     .notEmpty()
     .withMessage('Encrypted QR payload is required'),
+  body('examId')
+    .optional({ nullable: true, checkFalsy: true })
+    .isMongoId()
+    .withMessage('Invalid exam ID'),
 ];
 
 module.exports = {
-  generateQRValidation,
-  bulkGenerateQRValidation,
-  verifyQRValidation,
+  scanStudentQRValidation,
 };

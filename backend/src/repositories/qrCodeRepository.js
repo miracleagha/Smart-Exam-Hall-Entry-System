@@ -11,7 +11,7 @@ class QRCodeRepository {
 
   async findById(id) {
     return QRCode.findById(id)
-      .populate('studentId', 'firstName lastName matricNumber department level')
+      .populate('studentId', 'firstName lastName otherName matricNumber department faculty level passportPhoto')
       .populate('examId', 'title courseCode examDate venue');
   }
 
@@ -19,11 +19,28 @@ class QRCodeRepository {
     return QRCode.findOne(query);
   }
 
+  async findByPayload(encryptedPayload) {
+    return QRCode.findOne({ encryptedPayload })
+      .populate('studentId', 'firstName lastName otherName matricNumber department faculty level passportPhoto status')
+      .populate('examId', 'title courseCode examDate venue');
+  }
+
   async findByStudentAndExam(studentId, examId) {
     return QRCode.findOne({
       studentId,
       examId,
-      status: { $in: ['active'] },
+      status: 'active',
+    });
+  }
+
+  /**
+   * Find the student's currently active identity QR (if any).
+   */
+  async findActiveIdentityQR(studentId) {
+    return QRCode.findOne({
+      studentId,
+      type: 'student_identity',
+      status: 'active',
     });
   }
 
@@ -73,9 +90,24 @@ class QRCodeRepository {
     );
   }
 
+  /**
+   * Bump usedAt for identity QRs without marking them as consumed.
+   * Identity QRs are re-usable — each scan is a separate attendance event.
+   */
+  async touchUsage(id) {
+    return QRCode.findByIdAndUpdate(id, { usedAt: new Date() }, { new: true });
+  }
+
   async revokeByStudentAndExam(studentId, examId) {
     return QRCode.updateMany(
       { studentId, examId, status: 'active' },
+      { status: 'revoked' }
+    );
+  }
+
+  async revokeStudentIdentityQRs(studentId) {
+    return QRCode.updateMany(
+      { studentId, type: 'student_identity', status: 'active' },
       { status: 'revoked' }
     );
   }

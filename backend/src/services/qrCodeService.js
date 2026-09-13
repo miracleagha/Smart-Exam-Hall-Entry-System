@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const qrCodeRepository = require('../repositories/qrCodeRepository');
 const studentRepository = require('../repositories/studentRepository');
 const examRepository = require('../repositories/examRepository');
@@ -8,236 +9,115 @@ const { generateQRImage } = require('../utils/qrGenerator');
 const { AppError } = require('../utils/helpers');
 const env = require('../config/env');
 const logger = require('../utils/logger');
-const crypto = require('crypto');
+
+/**
+ * Serialize a student for API responses (safe fields only).
+ */
+const publicStudent = (student) => ({
+  id: student._id,
+  firstName: student.firstName,
+  lastName: student.lastName,
+  otherName: student.otherName || '',
+  fullName: student.fullName,
+  name: student.fullName,
+  matricNumber: student.matricNumber,
+  department: student.department,
+  faculty: student.faculty,
+  level: student.level,
+  photo: student.passportPhoto,
+  passportPhoto: student.passportPhoto,
+  status: student.status,
+});
 
 class QRCodeService {
   /**
-   * Generate QR code for a student + exam pair
+   * Return the student's active identity QR, generating one if it doesn't
+   * exist or has expired. Called by GET /qrcodes/student/my-qr.
    */
-  async generateQR(studentId, examId, institutionId, generatedBy) {
-    // Verify student exists and is active
+  async getOrCreateStudentIdentityQR(studentId) {
     const student = await studentRepository.findById(studentId);
     if (!student) throw new AppError('Student not found.', 404);
-    if (student.status !== 'active') throw new AppError('Student account is not active.', 400);
 
-    // Verify exam exists
-    const exam = await examRepository.findById(examId);
-    if (!exam) throw new AppError('Exam not found.', 404);
-    if (exam.institutionId.toString() !== institutionId.toString()) {
-      throw new AppError('Exam does not belong to your institution.', 403);
-    }
-
-    // Check for existing active QR
-    const existingQR = await qrCodeRepository.findByStudentAndExam(studentId, examId);
-    if (existingQR && !existingQR.isExpired && existingQR.status === 'active') {
-      // Return existing QR
-      return existingQR;
-    }
-
-    // Revoke any old active QRs
-    await qrCodeRepository.revokeByStudentAndExam(studentId, examId);
-
-    // Encrypted payload is intentionally minimal — it's just an
-    // unforgeable fingerprint. All context (student, exam, institution)
-    // comes from the QRCode DB record we look up by encryptedPayload.
-    // Keeping the payload small also keeps the rendered QR image dense
-    // enough for phone cameras to scan reliably.
-    const payload = {
-      t: Date.now(),
-      n: crypto.randomBytes(8).toString('hex'),
-    };
-
-    const encryptedPayload = encrypt(payload);
-
-    // Set expiry
-    const expiresAt = new Date(Date.now() + env.QR_EXPIRY_HOURS * 60 * 60 * 1000);
-
-    // Generate QR image
-    const filename = `qr_${studentId}_${examId}_${Date.now()}`;
-    const qrImage = await generateQRImage(encryptedPayload, filename);
-
-    // Save QR code record
-    const qrCode = await qrCodeRepository.create({
-      studentId,
-      examId,
-      institutionId,
-      encryptedPayload,
-      qrImagePath: qrImage.filePath,
-      qrBase64: qrImage.base64,
-      expiresAt,
-      generatedBy,
-    });
-
-    // Log audit
-    await auditLogService.log({
-      userId: generatedBy,
-      userType: 'user',
-      action: 'QR_GENERATED',
-      resource: 'QRCode',
-      resourceId: qrCode._id,
-      institutionId,
-      details: {
-        studentMatric: student.matricNumber,
-        examTitle: exam.title,
-      },
-    });
-
-    logger.info(`QR generated for student ${student.matricNumber} - exam ${exam.courseCode}`);
-
-    return qrCode;
-  }
-
-  /**
-   * Bulk generate QR codes for all eligible students for an exam
-   */
-  async bulkGenerateQR(examId, institutionId, generatedBy) {
-    const exam = await examRepository.findById(examId);
-    if (!exam) throw new AppError('Exam not found.', 404);
-
-    // Find active students whose department + level match the exam.
-    // Matching is normalized (case/whitespace-insensitive, and level falls back
-    // to its numeric part) so minor formatting differences like
-    // "Computer Science" vs "computer science" or "400 Level" vs "400" don't
-    // silently exclude eligible students.
-    const norm = (v) => (v || '').toString().trim().toLowerCase().replace(/\s+/g, ' ');
-    const digits = (v) => (v || '').toString().replace(/\D/g, '');
-    const examDept = norm(exam.department);
-    const examLevel = norm(exam.level);
-    const examLevelDigits = digits(exam.level);
-
-    const activeStudents = await studentRepository.findMany({
-      institutionId,
-      status: 'active',
-    });
-
-    const students = activeStudents.filter((s) => {
-      const deptMatch = norm(s.department) === examDept;
-      const levelMatch =
-        norm(s.level) === examLevel ||
-        (!!examLevelDigits && digits(s.level) === examLevelDigits);
-      return deptMatch && levelMatch;
-    });
-
-    if (students.length === 0) {
-      throw new AppError('No eligible students found for this exam.', 400);
-    }
-
-    const results = { total: students.length, generated: 0, skipped: 0, errors: [] };
-
-    for (const student of students) {
-      try {
-        // Check if QR already exists
-        const existing = await qrCodeRepository.findByStudentAndExam(student._id, examId);
-        if (existing && existing.status === 'active' && !existing.isExpired) {
-          results.skipped++;
-          continue;
-        }
-
-        await this.generateQR(student._id, examId, institutionId, generatedBy);
-        results.generated++;
-      } catch (error) {
-        results.errors.push({
-          studentId: student._id,
-          matricNumber: student.matricNumber,
-          error: error.message,
-        });
-      }
-    }
-
-    await auditLogService.log({
-      userId: generatedBy,
-      userType: 'user',
-      action: 'QR_BULK_GENERATED',
-      resource: 'QRCode',
-      institutionId,
-      details: {
-        examId,
-        examTitle: exam.title,
-        ...results,
-      },
-    });
-
-    logger.info(`Bulk QR generation: ${results.generated}/${results.total} for exam ${exam.courseCode}`);
-
-    return results;
-  }
-
-  /**
-   * List all QR codes generated for an exam (used for printing bulk passes)
-   */
-  async getQRCodesByExam(examId, institutionId) {
-    const exam = await examRepository.findById(examId);
-    if (!exam) throw new AppError('Exam not found.', 404);
-    if (exam.institutionId.toString() !== institutionId.toString()) {
-      throw new AppError('Exam does not belong to your institution.', 403);
-    }
-
-    return qrCodeRepository.findByExam(examId);
-  }
-
-  /**
-   * Generate a single shared "exam hall" QR code for an exam. Any eligible
-   * student can scan it; the backend identifies the student from their session
-   * and checks they are registered for this exam.
-   */
-  async generateExamQR(examId, institutionId, generatedBy) {
-    const exam = await examRepository.findById(examId);
-    if (!exam) throw new AppError('Exam not found.', 404);
-    if (exam.institutionId.toString() !== institutionId.toString()) {
-      throw new AppError('Exam does not belong to your institution.', 403);
-    }
-
-    // Reuse an existing active exam QR if one is still valid (idempotent).
-    const existing = await qrCodeRepository.findActiveExamQR(examId);
+    const existing = await qrCodeRepository.findActiveIdentityQR(studentId);
     if (existing && !existing.isExpired) {
       return existing;
     }
 
-    // Revoke any older exam QRs so only one shared code is active per exam.
-    await qrCodeRepository.revokeExamQRs(examId);
+    return this._createIdentityQR(student);
+  }
 
-    // Minimal payload — DB record carries the type/exam/institution.
+  /**
+   * Force-regenerate the student's identity QR (revokes any active one).
+   */
+  async regenerateStudentIdentityQR(studentId) {
+    const student = await studentRepository.findById(studentId);
+    if (!student) throw new AppError('Student not found.', 404);
+
+    await qrCodeRepository.revokeStudentIdentityQRs(studentId);
+    return this._createIdentityQR(student);
+  }
+
+  /**
+   * Internal: mint a fresh identity QR for a student.
+   */
+  async _createIdentityQR(student) {
+    // Encrypted payload is intentionally minimal — it's just an unforgeable
+    // fingerprint. Real identity comes from the DB record we look up by
+    // encryptedPayload. This keeps the QR dense enough for phone cameras.
     const payload = {
+      k: 'sid', // "student identity" marker
+      s: student._id.toString(),
       t: Date.now(),
       n: crypto.randomBytes(8).toString('hex'),
     };
-
     const encryptedPayload = encrypt(payload);
-    const expiresAt = new Date(Date.now() + env.QR_EXPIRY_HOURS * 60 * 60 * 1000);
 
-    const filename = `examqr_${examId}_${Date.now()}`;
+    const expiresAt = new Date(
+      Date.now() + env.STUDENT_QR_EXPIRY_DAYS * 24 * 60 * 60 * 1000
+    );
+
+    const filename = `student_qr_${student._id}_${Date.now()}`;
     const qrImage = await generateQRImage(encryptedPayload, filename);
 
     const qrCode = await qrCodeRepository.create({
-      examId,
-      institutionId,
-      type: 'exam',
+      studentId: student._id,
+      institutionId: student.institutionId?._id || student.institutionId,
+      type: 'student_identity',
+      examId: null,
       encryptedPayload,
       qrImagePath: qrImage.filePath,
       qrBase64: qrImage.base64,
       expiresAt,
-      generatedBy,
+      generatedBy: student._id,
     });
 
     await auditLogService.log({
-      userId: generatedBy,
-      userType: 'user',
-      action: 'EXAM_QR_GENERATED',
+      userId: student._id,
+      userType: 'student',
+      action: 'STUDENT_QR_GENERATED',
       resource: 'QRCode',
       resourceId: qrCode._id,
-      institutionId,
-      details: { examTitle: exam.title, courseCode: exam.courseCode },
+      institutionId: student.institutionId?._id || student.institutionId,
+      details: { matricNumber: student.matricNumber },
     });
 
-    logger.info(`Exam-hall QR generated for ${exam.courseCode}`);
+    logger.info(`Student identity QR generated: ${student.matricNumber}`);
     return qrCode;
   }
 
   /**
-   * Verify a scanned QR code payload
+   * Institution scans a student's identity QR.
+   *
+   * Behaviour:
+   *   1. Decrypt + look up the QR record (must be a valid identity QR
+   *      belonging to the scanning institution).
+   *   2. Return the student's info (name, matric, photo, dept, level).
+   *   3. If examId is provided AND the student is registered, record an
+   *      attendance row for that exam (idempotent — duplicates report
+   *      ALREADY_VERIFIED but still return student info so staff can
+   *      visually confirm identity).
    */
-  async verifyQR(encryptedPayload, verifiedBy, institutionId) {
-    // Some QR scanners append whitespace/newlines — be defensive.
+  async scanStudentQR(encryptedPayload, verifiedBy, institutionId, examId = null) {
     encryptedPayload = (encryptedPayload || '').toString().trim();
     if (!encryptedPayload) {
       return {
@@ -247,12 +127,12 @@ class QRCodeService {
       };
     }
 
-    // Step 1: Decrypt (payload contents aren't trusted — we only care that
-    // decryption succeeds, which proves the QR came from us).
+    // Step 1: Decrypt (contents aren't trusted — decrypt success just proves
+    // it was minted by us).
     try {
       decrypt(encryptedPayload);
     } catch (error) {
-      logger.warn(`QR verification failed: decryption error — ${error.message}`);
+      logger.warn(`Student QR scan failed: decryption error — ${error.message}`);
       return {
         verified: false,
         reason: 'Invalid QR code. Could not decrypt payload.',
@@ -260,10 +140,9 @@ class QRCodeService {
       };
     }
 
-    // Step 2: Find QR code record (DB is the source of truth for identity).
-    const qrCode = await qrCodeRepository.findOne({ encryptedPayload });
+    // Step 2: Find QR record
+    const qrCode = await qrCodeRepository.findByPayload(encryptedPayload);
     if (!qrCode) {
-      logger.warn('QR verification failed: no matching record in database.');
       return {
         verified: false,
         reason: 'QR code not found in system.',
@@ -271,102 +150,128 @@ class QRCodeService {
       };
     }
 
-    // Step 3: Check if already used
-    if (qrCode.isUsed || qrCode.status === 'used') {
+    // Step 3: Must be a student-identity QR
+    if (qrCode.type !== 'student_identity' || !qrCode.studentId) {
       return {
         verified: false,
-        reason: 'This QR code has already been used.',
-        status: 'ALREADY_USED',
-        usedAt: qrCode.usedAt,
+        reason: 'This is not a student identity QR code.',
+        status: 'WRONG_TYPE',
       };
     }
 
-    // Step 4: Check expiry
+    // Step 4: Institution scope
+    if (qrCode.institutionId.toString() !== institutionId.toString()) {
+      return {
+        verified: false,
+        reason: 'This QR belongs to a different institution.',
+        status: 'WRONG_INSTITUTION',
+      };
+    }
+
+    // Step 5: Expiry / revocation
     if (qrCode.expiresAt < new Date() || qrCode.status === 'expired') {
       return {
         verified: false,
-        reason: 'This QR code has expired.',
+        reason: 'This QR code has expired. Ask the student to regenerate it.',
         status: 'EXPIRED',
+        student: publicStudent(qrCode.studentId),
       };
     }
-
-    // Step 5: Check if revoked
     if (qrCode.status === 'revoked') {
       return {
         verified: false,
         reason: 'This QR code has been revoked.',
         status: 'REVOKED',
+        student: publicStudent(qrCode.studentId),
       };
     }
 
-    // Step 6: Check institution match
-    if (qrCode.institutionId.toString() !== institutionId.toString()) {
-      return {
-        verified: false,
-        reason: 'QR code does not belong to your institution.',
-        status: 'WRONG_INSTITUTION',
-      };
-    }
-
-    // Step 7: Check student status (identity comes from the QR record).
-    const qrStudentId = qrCode.studentId?._id || qrCode.studentId;
-    if (!qrStudentId) {
-      return {
-        verified: false,
-        reason: 'This QR is not tied to a specific student. Use the student self-scan flow instead.',
-        status: 'NOT_A_STUDENT_QR',
-      };
-    }
-    const student = await studentRepository.findById(qrStudentId);
-    if (!student) {
-      return {
-        verified: false,
-        reason: 'Student not found.',
-        status: 'STUDENT_NOT_FOUND',
-      };
-    }
+    // Step 6: Student account status
+    const student = qrCode.studentId; // populated
     if (student.status !== 'active') {
       return {
         verified: false,
         reason: `Student account is ${student.status}.`,
         status: 'STUDENT_INACTIVE',
-        student: { name: student.fullName, matricNumber: student.matricNumber },
+        student: publicStudent(student),
       };
     }
 
-    // Step 8: Check exam status
-    const qrExamId = qrCode.examId?._id || qrCode.examId;
-    const exam = await examRepository.findById(qrExamId);
+    // Step 7: If no exam context, just return the student's info.
+    if (!examId) {
+      // Touch usage timestamp so we know when it was last shown.
+      await qrCodeRepository.touchUsage(qrCode._id);
+
+      await auditLogService.log({
+        userId: verifiedBy,
+        userType: 'user',
+        action: 'STUDENT_QR_SCANNED',
+        resource: 'QRCode',
+        resourceId: qrCode._id,
+        institutionId,
+        details: { matricNumber: student.matricNumber, mode: 'identity-only' },
+      });
+
+      return {
+        verified: true,
+        status: 'IDENTITY_CONFIRMED',
+        message: 'Student identified.',
+        student: publicStudent(student),
+        exam: null,
+        attendance: null,
+      };
+    }
+
+    // Step 8: Exam context — validate + record attendance
+    const exam = await examRepository.findById(examId);
     if (!exam) {
       return {
         verified: false,
-        reason: 'Exam not found.',
+        reason: 'Selected exam not found.',
         status: 'EXAM_NOT_FOUND',
+        student: publicStudent(student),
+      };
+    }
+    if (exam.institutionId.toString() !== institutionId.toString()) {
+      return {
+        verified: false,
+        reason: 'Selected exam does not belong to your institution.',
+        status: 'WRONG_INSTITUTION',
+        student: publicStudent(student),
       };
     }
 
-    // Step 9: Check for duplicate attendance
+    // Student must be registered for this exam
+    const isRegistered =
+      Array.isArray(exam.registeredStudents) &&
+      exam.registeredStudents.some((id) => id.toString() === student._id.toString());
+    if (!isRegistered) {
+      return {
+        verified: false,
+        reason: 'Student is not registered for this exam.',
+        status: 'NOT_REGISTERED',
+        student: publicStudent(student),
+        exam: this._publicExam(exam),
+      };
+    }
+
+    // Duplicate check
     const existingAttendance = await attendanceRepository.findByStudentAndExam(
-      qrStudentId,
-      qrExamId
+      student._id,
+      exam._id
     );
     if (existingAttendance) {
       return {
         verified: false,
         reason: 'Student has already been verified for this exam.',
         status: 'ALREADY_VERIFIED',
-        student: {
-          name: student.fullName,
-          matricNumber: student.matricNumber,
-          photo: student.passportPhoto,
-        },
+        student: publicStudent(student),
+        exam: this._publicExam(exam),
+        attendance: existingAttendance.toJSON ? existingAttendance.toJSON() : existingAttendance,
       };
     }
 
-    // Step 10: All checks passed — mark QR as used
-    await qrCodeRepository.markUsed(qrCode._id);
-
-    // Step 11: Record attendance
+    // Record attendance
     const attendance = await attendanceRepository.create({
       studentId: student._id,
       examId: exam._id,
@@ -377,7 +282,8 @@ class QRCodeService {
       verifiedAt: new Date(),
     });
 
-    // Log audit
+    await qrCodeRepository.touchUsage(qrCode._id);
+
     await auditLogService.log({
       userId: verifiedBy,
       userType: 'user',
@@ -388,253 +294,32 @@ class QRCodeService {
       details: {
         studentMatric: student.matricNumber,
         examTitle: exam.title,
+        courseCode: exam.courseCode,
       },
     });
 
-    logger.info(`QR verified: ${student.matricNumber} for ${exam.courseCode}`);
+    logger.info(`Attendance recorded: ${student.matricNumber} for ${exam.courseCode}`);
 
     return {
       verified: true,
       status: 'VERIFIED',
-      student: {
-        id: student._id,
-        name: student.fullName,
-        matricNumber: student.matricNumber,
-        department: student.department,
-        level: student.level,
-        photo: student.passportPhoto,
-      },
-      exam: {
-        id: exam._id,
-        title: exam.title,
-        courseCode: exam.courseCode,
-        venue: exam.venue,
-      },
-      attendance: attendance.toJSON(),
+      message: 'Student verified and attendance recorded.',
+      student: publicStudent(student),
+      exam: this._publicExam(exam),
+      attendance: attendance.toJSON ? attendance.toJSON() : attendance,
     };
   }
 
-  /**
-   * Student-initiated QR verification (student scans institution QR at exam hall)
-   */
-  async studentVerifyQR(encryptedPayload, studentId) {
-    encryptedPayload = (encryptedPayload || '').toString().trim();
-    if (!encryptedPayload) {
-      return {
-        verified: false,
-        reason: 'Empty QR payload received.',
-        status: 'INVALID',
-      };
-    }
-
-    // Step 1: Decrypt (we don't trust payload contents — identity comes
-    // from the DB record we look up by encryptedPayload).
-    try {
-      decrypt(encryptedPayload);
-    } catch (error) {
-      logger.warn(`Student QR verification failed: decryption error — ${error.message}`);
-      return {
-        verified: false,
-        reason: 'Invalid QR code. Could not decrypt payload.',
-        status: 'INVALID',
-      };
-    }
-
-    // Step 2: Find QR code record
-    const qrCode = await qrCodeRepository.findOne({ encryptedPayload });
-    if (!qrCode) {
-      logger.warn('Student QR verification failed: no matching record in database.');
-      return {
-        verified: false,
-        reason: 'QR code not found in system.',
-        status: 'NOT_FOUND',
-      };
-    }
-
-    // An exam-hall QR is shared by all eligible students.
-    const isExamQR = qrCode.type === 'exam' || !qrCode.studentId;
-
-    // Step 3: For per-student QRs, verify the QR belongs to this student.
-    if (!isExamQR) {
-      const qrStudentId = qrCode.studentId?._id || qrCode.studentId;
-      if (qrStudentId.toString() !== studentId.toString()) {
-        return {
-          verified: false,
-          reason: 'This QR code does not belong to you.',
-          status: 'WRONG_STUDENT',
-        };
-      }
-    }
-
-    // Step 4: Per-student QRs are single-use; exam-hall QRs stay reusable.
-    if (!isExamQR && (qrCode.isUsed || qrCode.status === 'used')) {
-      return {
-        verified: false,
-        reason: 'This QR code has already been used.',
-        status: 'ALREADY_USED',
-        usedAt: qrCode.usedAt,
-      };
-    }
-
-    // Step 5: Check expiry
-    if (qrCode.expiresAt < new Date() || qrCode.status === 'expired') {
-      return {
-        verified: false,
-        reason: 'This QR code has expired.',
-        status: 'EXPIRED',
-      };
-    }
-
-    // Step 6: Check if revoked
-    if (qrCode.status === 'revoked') {
-      return {
-        verified: false,
-        reason: 'This QR code has been revoked.',
-        status: 'REVOKED',
-      };
-    }
-
-    // Step 7: Check student status
-    const student = await studentRepository.findById(studentId);
-    if (!student) {
-      return {
-        verified: false,
-        reason: 'Student not found.',
-        status: 'STUDENT_NOT_FOUND',
-      };
-    }
-    if (student.status !== 'active') {
-      return {
-        verified: false,
-        reason: `Your account is ${student.status}. Contact administration.`,
-        status: 'STUDENT_INACTIVE',
-      };
-    }
-
-    // Step 8: Check exam (identity comes from the QR record).
-    const qrExamId = qrCode.examId?._id || qrCode.examId;
-    const exam = await examRepository.findById(qrExamId);
-    if (!exam) {
-      return {
-        verified: false,
-        reason: 'Exam not found.',
-        status: 'EXAM_NOT_FOUND',
-      };
-    }
-
-    // Step 8b: For exam-hall QRs, confirm the student has registered for this
-    // exam. Per-student QRs are already scoped to a specific studentId so this
-    // check only applies to the shared exam-hall QR flow.
-    if (isExamQR) {
-      const registered = Array.isArray(exam.registeredStudents)
-        && exam.registeredStudents.some((id) => id.toString() === student._id.toString());
-      if (!registered) {
-        return {
-          verified: false,
-          reason: 'You are not registered for this exam.',
-          status: 'NOT_ELIGIBLE',
-          student: {
-            name: student.fullName,
-            matricNumber: student.matricNumber,
-          },
-        };
-      }
-    }
-
-    // Step 9: Check for duplicate attendance
-    const existingAttendance = await attendanceRepository.findByStudentAndExam(
-      studentId,
-      qrExamId
-    );
-    if (existingAttendance) {
-      return {
-        verified: false,
-        reason: 'You have already been verified for this exam.',
-        status: 'ALREADY_VERIFIED',
-        student: {
-          name: student.fullName,
-          matricNumber: student.matricNumber,
-          photo: student.passportPhoto,
-        },
-        exam: {
-          title: exam.title,
-          courseCode: exam.courseCode,
-          venue: exam.venue,
-        },
-      };
-    }
-
-    const institutionId = qrCode.institutionId;
-
-    // Step 10: All checks passed — mark QR as used
-    await qrCodeRepository.markUsed(qrCode._id);
-
-    // Step 11: Record attendance
-    const attendance = await attendanceRepository.create({
-      studentId: student._id,
-      examId: exam._id,
-      institutionId,
-      qrCodeId: qrCode._id,
-      verifiedBy: studentId,
-      verificationStatus: 'verified',
-      verifiedAt: new Date(),
-    });
-
-    // Log audit
-    await auditLogService.log({
-      userId: studentId,
-      userType: 'student',
-      action: 'QR_STUDENT_VERIFIED',
-      resource: 'Attendance',
-      resourceId: attendance._id,
-      institutionId,
-      details: {
-        studentMatric: student.matricNumber,
-        examTitle: exam.title,
-      },
-    });
-
-    logger.info(`Student self-verified: ${student.matricNumber} for ${exam.courseCode}`);
-
+  _publicExam(exam) {
     return {
-      verified: true,
-      status: 'VERIFIED',
-      message: 'Student Verified',
-      student: {
-        id: student._id,
-        name: student.fullName,
-        matricNumber: student.matricNumber,
-        department: student.department,
-        level: student.level,
-        photo: student.passportPhoto,
-      },
-      exam: {
-        id: exam._id,
-        title: exam.title,
-        courseCode: exam.courseCode,
-        venue: exam.venue,
-      },
-      attendance: attendance.toJSON(),
+      id: exam._id,
+      title: exam.title,
+      courseCode: exam.courseCode,
+      venue: exam.venue,
+      examDate: exam.examDate,
+      startTime: exam.startTime,
+      endTime: exam.endTime,
     };
-  }
-
-  /**
-   * Regenerate QR code (revoke old, create new)
-   */
-  async regenerateQR(qrCodeId, institutionId, userId) {
-    const qrCode = await qrCodeRepository.findById(qrCodeId);
-    if (!qrCode) throw new AppError('QR code not found.', 404);
-
-    // Revoke old
-    await qrCodeRepository.update(qrCodeId, { status: 'revoked' });
-
-    // Generate new
-    return this.generateQR(
-      qrCode.studentId._id || qrCode.studentId,
-      qrCode.examId._id || qrCode.examId,
-      institutionId,
-      userId
-    );
   }
 
   /**
@@ -647,10 +332,17 @@ class QRCodeService {
   }
 
   /**
-   * Get student's active QR codes (for student-ui)
+   * List all active student identity QRs for an institution.
+   * Powers the institution "QR Registry" view.
    */
-  async getStudentActiveQR(studentId) {
-    return qrCodeRepository.findActiveForStudent(studentId);
+  async listInstitutionIdentityQRs(institutionId) {
+    const { data } = await qrCodeRepository.findPaginated(
+      { institutionId, type: 'student_identity', status: 'active' },
+      1,
+      500,
+      '-createdAt'
+    );
+    return data;
   }
 }
 

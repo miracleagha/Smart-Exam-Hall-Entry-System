@@ -31,15 +31,17 @@ export const Reports = () => {
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const studentList = await api.students.list('INST-001');
-        const examList = await api.exams.list();
-        const attList = await api.attendance.list();
-        const auditList = await api.auditLogs.list();
-        
-        setStudents(studentList);
-        setExams(examList);
-        setAttendance(attList);
-        setLogs(auditList);
+        const [studentList, examList, attList, auditList] = await Promise.all([
+          api.students.list({ limit: 1000 }),
+          api.exams.list({ limit: 1000 }),
+          api.attendance.list({ limit: 1000 }),
+          api.auditLogs.list({ limit: 1000 }),
+        ]);
+
+        setStudents(Array.isArray(studentList) ? studentList : studentList?.students || []);
+        setExams(Array.isArray(examList) ? examList : examList?.exams || []);
+        setAttendance(Array.isArray(attList) ? attList : attList?.records || []);
+        setLogs(Array.isArray(auditList) ? auditList : auditList?.logs || auditList?.records || []);
       } catch (e) {
         console.error(e);
       }

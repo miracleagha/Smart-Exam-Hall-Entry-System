@@ -1,8 +1,25 @@
 import axios from 'axios';
 
-// const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
-const API_URL = 'https://smart-exam-hall-entry-system.onrender.com/api';
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+// const API_URL = 'https://smart-exam-hall-entry-system.onrender.com/api';
 
+/**
+ * Base URL of the backend (without /api) — used to build absolute URLs for
+ * server-hosted media like passport photos or QR PNGs.
+ */
+export const API_ORIGIN = API_URL.replace(/\/api\/?$/, '');
+
+/**
+ * Turn a stored path or absolute URL into a fully qualified URL the browser
+ * can load. Returns null when input is falsy.
+ */
+export const resolveMediaUrl = (pathOrUrl) => {
+  if (!pathOrUrl) return null;
+  if (/^https?:\/\//i.test(pathOrUrl)) return pathOrUrl;
+  if (pathOrUrl.startsWith('data:')) return pathOrUrl;
+  if (pathOrUrl.startsWith('/')) return `${API_ORIGIN}${pathOrUrl}`;
+  return `${API_ORIGIN}/${pathOrUrl}`;
+};
 
 const apiClient = axios.create({
   baseURL: API_URL,
@@ -14,7 +31,7 @@ const apiClient = axios.create({
 // Request interceptor — inject JWT access token
 apiClient.interceptors.request.use(
   (config) => {
-    const session = JSON.parse(localStorage.getItem('institution_session'));
+    const session = JSON.parse(localStorage.getItem('institution_session') || 'null');
     if (session && session.accessToken) {
       config.headers.Authorization = `Bearer ${session.accessToken}`;
     }
@@ -33,7 +50,7 @@ apiClient.interceptors.response.use(
       originalRequest._retry = true;
 
       try {
-        const session = JSON.parse(localStorage.getItem('institution_session'));
+        const session = JSON.parse(localStorage.getItem('institution_session') || 'null');
         if (session?.refreshToken) {
           const refreshRes = await axios.post(`${API_URL}/auth/refresh-token`, {
             refreshToken: session.refreshToken,
@@ -68,6 +85,28 @@ apiClient.interceptors.response.use(
  * Helper to unwrap the standard API response: { success, message, data }
  */
 const unwrap = (res) => res.data?.data ?? res.data;
+
+/**
+ * Convert a plain object into FormData. Fields whose values are File or Blob
+ * are appended as-is; everything else is stringified only if it isn't
+ * already a string. Nulls / undefineds are skipped.
+ */
+const toFormData = (obj) => {
+  const fd = new FormData();
+  Object.entries(obj || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null) return;
+    if (value instanceof File || value instanceof Blob) {
+      fd.append(key, value);
+    } else if (typeof value === 'boolean' || typeof value === 'number') {
+      fd.append(key, String(value));
+    } else if (value instanceof Date) {
+      fd.append(key, value.toISOString());
+    } else {
+      fd.append(key, value);
+    }
+  });
+  return fd;
+};
 
 export const api = {
   auth: {
@@ -136,13 +175,39 @@ export const api = {
     },
   },
 
+  institution: {
+    getProfile: async () => {
+      const res = await apiClient.get('/institutions/profile');
+      return unwrap(res);
+    },
+    updateProfile: async (data) => {
+      // Backend expects multipart (logo optional) but happily takes JSON too.
+      const res = await apiClient.put('/institutions/profile', data);
+      return unwrap(res);
+    },
+  },
+
   students: {
     list: async (params = {}) => {
       const res = await apiClient.get('/students', { params });
       return unwrap(res);
     },
+    /**
+     * Create a student. If `data.passportPhoto` is a File, we submit
+     * multipart/form-data so the backend can persist the image.
+     */
     create: async (data) => {
-      const res = await apiClient.post('/students', data);
+      const hasFile = data && data.passportPhoto instanceof File;
+      if (hasFile) {
+        const res = await apiClient.post('/students', toFormData(data), {
+          headers: { 'Content-Type': 'multipart/form-data' },
+        });
+        return unwrap(res);
+      }
+      // Strip empty/File-less passportPhoto so backend doesn't try to
+      // interpret undefined as a value.
+      const { passportPhoto: _drop, ...rest } = data || {};
+      const res = await apiClient.post('/students', rest);
       return unwrap(res);
     },
     get: async (id) => {
@@ -150,7 +215,23 @@ export const api = {
       return unwrap(res);
     },
     update: async (id, data) => {
-      const res = await apiClient.put(`/students/${id}`, data);
+      const hasFile = data && data.passportPhoto instanceof File;
+      if (hasFile) {
+        const res = await apiClient.put(`/students/${id}`, toFormData(data), {
+          headers: { 'Content-Type': 'multipart/form-data' },
+        });
+        return unwrap(res);
+      }
+      const { passportPhoto: _drop, ...rest } = data || {};
+      const res = await apiClient.put(`/students/${id}`, rest);
+      return unwrap(res);
+    },
+    updatePhoto: async (id, file) => {
+      const fd = new FormData();
+      fd.append('passportPhoto', file);
+      const res = await apiClient.put(`/students/${id}/passport`, fd, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
       return unwrap(res);
     },
     updateStatus: async (id, status) => {
@@ -205,32 +286,22 @@ export const api = {
   },
 
   qrCodes: {
-    generate: async (data) => {
-      const res = await apiClient.post('/qrcodes/generate', data);
+    /**
+     * Scan a student's identity QR. Optionally include an examId to also
+     * record attendance for that exam.
+     */
+    scanStudent: async (encryptedPayload, examId = null) => {
+      const body = { encryptedPayload };
+      if (examId) body.examId = examId;
+      const res = await apiClient.post('/qrcodes/scan-student', body);
       return unwrap(res);
     },
-    bulkGenerate: async (data) => {
-      const res = await apiClient.post('/qrcodes/bulk-generate', data);
-      return unwrap(res);
-    },
-    listByExam: async (examId) => {
-      const res = await apiClient.get(`/qrcodes/exam/${examId}`);
-      return unwrap(res);
-    },
-    generateExamQR: async (examId) => {
-      const res = await apiClient.post('/qrcodes/exam-qr', { examId });
-      return unwrap(res);
-    },
-    verify: async (encryptedPayload) => {
-      const res = await apiClient.post('/qrcodes/verify', { encryptedPayload });
+    listIdentityQRs: async () => {
+      const res = await apiClient.get('/qrcodes/institution/identity');
       return unwrap(res);
     },
     get: async (id) => {
       const res = await apiClient.get(`/qrcodes/${id}`);
-      return unwrap(res);
-    },
-    regenerate: async (id) => {
-      const res = await apiClient.patch(`/qrcodes/${id}/regenerate`);
       return unwrap(res);
     },
   },

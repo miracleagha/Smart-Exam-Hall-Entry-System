@@ -3,98 +3,64 @@ const { successResponse } = require('../utils/helpers');
 
 class QRCodeController {
   /**
-   * POST /api/qrcodes/generate
+   * GET /api/qrcodes/student/my-qr  (student JWT)
+   * Returns the student's active identity QR — creates one if missing/expired.
    */
-  async generateQR(req, res, next) {
+  async getMyQR(req, res, next) {
     try {
-      const { studentId, examId } = req.body;
-      const qrCode = await qrCodeService.generateQR(
-        studentId,
-        examId,
-        req.user.institutionId,
-        req.user.id
-      );
-      return successResponse(res, 'QR code generated.', qrCode, null, 201);
+      const qrCode = await qrCodeService.getOrCreateStudentIdentityQR(req.user.id);
+      return successResponse(res, 'Student QR retrieved.', qrCode);
     } catch (error) {
       next(error);
     }
   }
 
   /**
-   * POST /api/qrcodes/bulk-generate
+   * POST /api/qrcodes/student/regenerate  (student JWT)
+   * Revokes any active identity QR and mints a fresh one.
    */
-  async bulkGenerateQR(req, res, next) {
+  async regenerateMyQR(req, res, next) {
     try {
-      const { examId } = req.body;
-      const result = await qrCodeService.bulkGenerateQR(
-        examId,
-        req.user.institutionId,
-        req.user.id
-      );
-      return successResponse(res, 'Bulk QR generation completed.', result);
+      const qrCode = await qrCodeService.regenerateStudentIdentityQR(req.user.id);
+      return successResponse(res, 'Student QR regenerated.', qrCode, null, 201);
     } catch (error) {
       next(error);
     }
   }
 
   /**
-   * GET /api/qrcodes/exam/:examId
+   * POST /api/qrcodes/scan-student  (institution JWT)
+   * Body: { encryptedPayload, examId? }
+   *
+   * Scans a student's identity QR. If examId is provided, also records
+   * attendance for that exam (when eligible).
    */
-  async getExamQRCodes(req, res, next) {
+  async scanStudent(req, res, next) {
     try {
-      const qrCodes = await qrCodeService.getQRCodesByExam(
-        req.params.examId,
-        req.user.institutionId
-      );
-      return successResponse(res, 'QR codes retrieved.', qrCodes);
-    } catch (error) {
-      next(error);
-    }
-  }
-
-  /**
-   * POST /api/qrcodes/exam-qr
-   */
-  async generateExamQR(req, res, next) {
-    try {
-      const { examId } = req.body;
-      const qrCode = await qrCodeService.generateExamQR(
-        examId,
-        req.user.institutionId,
-        req.user.id
-      );
-      return successResponse(res, 'Exam hall QR generated.', qrCode, null, 201);
-    } catch (error) {
-      next(error);
-    }
-  }
-
-  /**
-   * POST /api/qrcodes/verify
-   */
-  async verifyQR(req, res, next) {
-    try {
-      const { encryptedPayload } = req.body;
-      const result = await qrCodeService.verifyQR(
+      const { encryptedPayload, examId } = req.body;
+      const result = await qrCodeService.scanStudentQR(
         encryptedPayload,
         req.user.id,
-        req.user.institutionId
+        req.user.institutionId,
+        examId || null
       );
 
-      // Emit socket event
+      // Emit socket events for real-time dashboards
       if (req.io) {
         const room = `institution:${req.user.institutionId}`;
-        if (result.verified) {
+        if (result.verified && result.status === 'VERIFIED') {
           req.io.to(room).emit('verification:success', {
             student: result.student,
             exam: result.exam,
             timestamp: new Date(),
           });
-          req.io.to(room).emit('attendance:update', {
-            examId: result.exam?.id,
-            timestamp: new Date(),
-          });
-        } else {
+          if (result.exam?.id) {
+            req.io.to(room).emit('attendance:update', {
+              examId: result.exam.id,
+              timestamp: new Date(),
+            });
+          }
+        } else if (!result.verified) {
           req.io.to(room).emit('verification:rejected', {
             reason: result.reason,
             status: result.status,
@@ -104,7 +70,7 @@ class QRCodeController {
       }
 
       const statusCode = result.verified ? 200 : 400;
-      const message = result.verified ? 'Verification successful.' : result.reason;
+      const message = result.verified ? (result.message || 'Verification successful.') : result.reason;
       return res.status(statusCode).json({
         success: result.verified,
         message,
@@ -116,7 +82,20 @@ class QRCodeController {
   }
 
   /**
-   * GET /api/qrcodes/:id
+   * GET /api/qrcodes/institution/identity  (institution JWT)
+   * Lists active student identity QRs for the institution.
+   */
+  async listInstitutionIdentityQRs(req, res, next) {
+    try {
+      const qrs = await qrCodeService.listInstitutionIdentityQRs(req.user.institutionId);
+      return successResponse(res, 'Identity QRs retrieved.', qrs);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * GET /api/qrcodes/:id  (institution JWT)
    */
   async getQRCode(req, res, next) {
     try {
@@ -126,58 +105,6 @@ class QRCodeController {
       next(error);
     }
   }
-
-  /**
-   * PATCH /api/qrcodes/:id/regenerate
-   */
-  async regenerateQR(req, res, next) {
-    try {
-      const qrCode = await qrCodeService.regenerateQR(
-        req.params.id,
-        req.user.institutionId,
-        req.user.id
-      );
-      return successResponse(res, 'QR code regenerated.', qrCode);
-    } catch (error) {
-      next(error);
-    }
-  }
-
-  /**
-   * GET /api/qrcodes/student/active (Student)
-   */
-  async getStudentActiveQR(req, res, next) {
-    try {
-      const qrCodes = await qrCodeService.getStudentActiveQR(req.user.id);
-      return successResponse(res, 'Active QR codes retrieved.', qrCodes);
-    } catch (error) {
-      next(error);
-    }
-  }
-
-  /**
-   * POST /api/qrcodes/student/verify (Student scans QR at exam hall)
-   */
-  async studentVerifyQR(req, res, next) {
-    try {
-      const { encryptedPayload } = req.body;
-      const result = await qrCodeService.studentVerifyQR(
-        encryptedPayload,
-        req.user.id
-      );
-
-      const statusCode = result.verified ? 200 : 400;
-      const message = result.verified ? 'Student Verified' : result.reason;
-      return res.status(statusCode).json({
-        success: result.verified,
-        message,
-        data: result,
-      });
-    } catch (error) {
-      next(error);
-    }
-  }
 }
 
 module.exports = new QRCodeController();
-

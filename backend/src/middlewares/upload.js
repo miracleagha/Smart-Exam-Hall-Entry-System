@@ -6,7 +6,7 @@ const fs = require('fs');
 const uploadsDir = path.join(__dirname, '..', '..', 'uploads');
 
 // Ensure directories exist
-const dirs = ['passports', 'logos', 'imports'];
+const dirs = ['passports', 'logos', 'imports', 'qrcodes'];
 dirs.forEach((dir) => {
   const dirPath = path.join(uploadsDir, dir);
   if (!fs.existsSync(dirPath)) {
@@ -93,4 +93,21 @@ const uploadImport = multer({
   fileFilter: importFilter,
 }).single('file');
 
-module.exports = { uploadPassport, uploadLogo, uploadImport };
+/**
+ * Optional passport upload — passes through unchanged for JSON requests
+ * and stores the file for multipart requests. Used on POST/PUT /students.
+ */
+const optionalPassport = (req, res, next) => {
+  const contentType = (req.headers['content-type'] || '').toLowerCase();
+  if (!contentType.startsWith('multipart/form-data')) {
+    return next();
+  }
+  return uploadPassport(req, res, (err) => {
+    if (err) {
+      return res.status(400).json({ success: false, message: err.message });
+    }
+    return next();
+  });
+};
+
+module.exports = { uploadPassport, uploadLogo, uploadImport, optionalPassport };

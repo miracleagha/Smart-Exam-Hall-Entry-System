@@ -4,25 +4,48 @@ const qrCodeController = require('../controllers/qrCodeController');
 const { authenticate, authenticateStudent, authorize } = require('../middlewares/auth');
 const { verifyLimiter } = require('../middlewares/rateLimiter');
 const validate = require('../middlewares/validate');
-const { generateQRValidation, bulkGenerateQRValidation, verifyQRValidation } = require('../validations/qrCodeValidation');
+const { scanStudentQRValidation } = require('../validations/qrCodeValidation');
 
 // ==========================================
 // Student QR routes (Student JWT)
 // ==========================================
-router.get('/student/active', authenticateStudent, qrCodeController.getStudentActiveQR);
-router.post('/student/verify', authenticateStudent, qrCodeController.studentVerifyQR);
+// Student gets / regenerates their own identity QR
+router.get('/student/my-qr', authenticateStudent, qrCodeController.getMyQR);
+router.post('/student/regenerate', authenticateStudent, qrCodeController.regenerateMyQR);
 
 // ==========================================
 // Institution routes (Admin/Officer JWT)
 // ==========================================
 router.use(authenticate);
 
-router.post('/generate', authorize('institution_admin', 'exam_officer'), generateQRValidation, validate, qrCodeController.generateQR);
-router.post('/bulk-generate', authorize('institution_admin', 'exam_officer'), bulkGenerateQRValidation, validate, qrCodeController.bulkGenerateQR);
-router.post('/exam-qr', authorize('institution_admin', 'exam_officer'), bulkGenerateQRValidation, validate, qrCodeController.generateExamQR);
-router.get('/exam/:examId', authorize('institution_admin', 'exam_officer'), qrCodeController.getExamQRCodes);
-router.post('/verify', authorize('institution_admin', 'exam_officer'), verifyLimiter, verifyQRValidation, validate, qrCodeController.verifyQR);
+// Scan a student's identity QR (optionally records exam attendance)
+router.post(
+  '/scan-student',
+  authorize('institution_admin', 'exam_officer'),
+  verifyLimiter,
+  scanStudentQRValidation,
+  validate,
+  qrCodeController.scanStudent
+);
+
+// Backwards-compatible alias: some clients may still POST to /verify.
+router.post(
+  '/verify',
+  authorize('institution_admin', 'exam_officer'),
+  verifyLimiter,
+  scanStudentQRValidation,
+  validate,
+  qrCodeController.scanStudent
+);
+
+// Registry of active student identity QRs (for institution overview)
+router.get(
+  '/institution/identity',
+  authorize('institution_admin', 'exam_officer'),
+  qrCodeController.listInstitutionIdentityQRs
+);
+
+// Single QR detail lookup
 router.get('/:id', authorize('institution_admin', 'exam_officer'), qrCodeController.getQRCode);
-router.patch('/:id/regenerate', authorize('institution_admin', 'exam_officer'), qrCodeController.regenerateQR);
 
 module.exports = router;

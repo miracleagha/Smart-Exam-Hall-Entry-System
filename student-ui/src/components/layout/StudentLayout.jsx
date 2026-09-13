@@ -1,7 +1,8 @@
 import React from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
-import { ScanLine, QrCode, LayoutDashboard, History, User, LogOut, BookOpen } from 'lucide-react';
+import { resolveMediaUrl } from '../../services/api';
+import { QrCode, LayoutDashboard, History, User, LogOut, BookOpen } from 'lucide-react';
 
 export const StudentLayout = () => {
   const { user, logout } = useAuth();
@@ -14,11 +15,13 @@ export const StudentLayout = () => {
 
   const navItems = [
     { name: 'Dashboard', path: '/', icon: <LayoutDashboard className="w-4 h-4" /> },
-    { name: 'Scan QR', path: '/my-qr', icon: <ScanLine className="w-4 h-4" /> },
+    { name: 'My QR Code', path: '/my-qr', icon: <QrCode className="w-4 h-4" /> },
     { name: 'Available Exams', path: '/available-exams', icon: <BookOpen className="w-4 h-4" /> },
     { name: 'Exam History', path: '/exam-history', icon: <History className="w-4 h-4" /> },
-    { name: 'Profile', path: '/profile', icon: <User className="w-4 h-4" /> }
+    { name: 'Profile', path: '/profile', icon: <User className="w-4 h-4" /> },
   ];
+
+  const passportUrl = resolveMediaUrl(user?.passportPhoto);
 
   return (
     <div className="min-h-screen bg-geo-dots flex flex-col">
@@ -61,9 +64,9 @@ export const StudentLayout = () => {
         {/* User Actions */}
         <div className="flex items-center gap-4">
           <div className="hidden lg:flex items-center gap-2">
-            {user?.passportPhoto && (
+            {passportUrl && (
               <img
-                src={user.passportPhoto}
+                src={passportUrl}
                 alt="Avatar"
                 className="w-8 h-8 rounded-none border-2 border-black object-cover"
               />
@@ -82,7 +85,7 @@ export const StudentLayout = () => {
       </header>
 
       {/* Mobile Navigation Header */}
-      <nav className="md:hidden bg-white border-b-4 border-black px-4 py-2 grid grid-cols-4 gap-1 max-w-7xl mx-auto w-full flat-border border-t-0">
+      <nav className="md:hidden bg-white border-b-4 border-black px-4 py-2 grid grid-cols-5 gap-1 max-w-7xl mx-auto w-full flat-border border-t-0">
         {navItems.map((item) => (
           <NavLink
             key={item.path}

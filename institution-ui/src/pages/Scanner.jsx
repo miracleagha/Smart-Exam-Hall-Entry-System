@@ -1,156 +1,175 @@
-import React, { useState, useEffect } from 'react';
-import { api } from '../services/api';
+import React, { useState, useEffect, useRef } from 'react';
+import { api, resolveMediaUrl } from '../services/api';
 import { useToast } from '../context/ToastContext';
 import { Html5QrcodeScanner } from 'html5-qrcode';
-import { encodeQR } from '../services/mockDataService';
-import { 
-  Camera, 
-  CheckCircle, 
-  XCircle, 
-  User, 
-  BookOpen, 
-  HelpCircle,
-  Play,
-  RotateCcw
+import {
+  Camera,
+  CheckCircle,
+  XCircle,
+  RotateCcw,
+  ScanLine,
+  BookOpen,
+  User,
+  AlertCircle,
+  Info,
 } from 'lucide-react';
 
+/**
+ * Scanner
+ *
+ * Institution-side scanner. Reads a student's identity QR (generated on
+ * the student portal) and POSTs the encrypted payload to
+ * `/qrcodes/scan-student`. If an exam is selected, the backend also
+ * records attendance for that exam.
+ */
 export const Scanner = () => {
   const { showToast } = useToast();
-  
+
   const [exams, setExams] = useState([]);
-  const [students, setStudents] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  // Selected exam to scan for
   const [activeExamId, setActiveExamId] = useState('');
-  
-  // Scanner state
   const [scanning, setScanning] = useState(false);
-  const [scanResult, setScanResult] = useState(null); // { verified: boolean, reason: string, student: {}, exam: {}, checkInTime: '' }
-  
-  // Simulator state
-  const [simStudentId, setSimStudentId] = useState('');
-  const [simExpired, setSimExpired] = useState(false);
-  const [simWrongExam, setSimWrongExam] = useState(false);
+  const [scanResult, setScanResult] = useState(null);
+  const [processing, setProcessing] = useState(false);
+  const [cameraError, setCameraError] = useState(null);
+  const [manualPayload, setManualPayload] = useState('');
+
+  const scannerRef = useRef(null);
 
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const examList = await api.exams.list();
-        const studentList = await api.students.list('INST-001'); // fetch all students
-        setExams(examList.filter(e => e.status === 'Active'));
-        setStudents(studentList);
+        const list = await api.exams.list({ limit: 500 });
+        const rows = Array.isArray(list) ? list : list?.exams || [];
+        setExams(rows.filter((e) => ['upcoming', 'active'].includes(e.status)));
       } catch (err) {
-        showToast('Failed to load validation contexts', 'error');
+        showToast(err.message || 'Failed to load exams.', 'error');
       } finally {
         setLoading(false);
       }
     };
     fetchData();
-  }, []);
+  }, [showToast]);
 
-  // Web camera scanner bootstrap
+  const requestCameraPermission = async () => {
+    setCameraError(null);
+    try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        setCameraError(
+          'Your browser does not support camera access. Please use a modern browser like Chrome or Firefox.'
+        );
+        return false;
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment' },
+      });
+      stream.getTracks().forEach((track) => track.stop());
+      return true;
+    } catch (err) {
+      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+        setCameraError('Camera access was denied. Please allow camera permission and try again.');
+      } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
+        setCameraError('No camera found on this device.');
+      } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
+        setCameraError('Camera is in use by another application.');
+      } else {
+        setCameraError(`Camera error: ${err.message || 'Unknown error occurred'}`);
+      }
+      return false;
+    }
+  };
+
+  // Start / stop the html5-qrcode scanner when `scanning` toggles.
   useEffect(() => {
-    let scanner = null;
-    
-    if (scanning && activeExamId) {
-      // Initialize html5-qrcode scanner
-      scanner = new Html5QrcodeScanner('qr-reader', {
+    if (!scanning) return undefined;
+
+    const timeout = setTimeout(() => {
+      const scanner = new Html5QrcodeScanner('qr-reader', {
         fps: 10,
         qrbox: (viewfinderWidth, viewfinderHeight) => {
           const minEdge = Math.min(viewfinderWidth, viewfinderHeight);
           const qrboxSize = Math.floor(minEdge * 0.7);
           return { width: qrboxSize, height: qrboxSize };
         },
-        aspectRatio: 1.0
+        aspectRatio: 1.0,
+        rememberLastUsedCamera: true,
+        showTorchButtonIfSupported: true,
       });
-
+      scannerRef.current = scanner;
       scanner.render(
         async (decodedText) => {
-          // Success callback
-          scanner.clear();
+          try {
+            await scanner.clear();
+          } catch (_e) {
+            // ignore
+          }
+          scannerRef.current = null;
           setScanning(false);
           await processScan(decodedText);
         },
-        (error) => {
-          // Silent log to prevent console flood
+        () => {
+          // per-frame decode errors are noisy — swallow
         }
       );
-    }
+    }, 150);
 
     return () => {
-      if (scanner) {
+      clearTimeout(timeout);
+      if (scannerRef.current) {
         try {
-          scanner.clear();
-        } catch (e) {
+          scannerRef.current.clear();
+        } catch (_e) {
           // ignore
         }
+        scannerRef.current = null;
       }
     };
-  }, [scanning, activeExamId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scanning]);
 
-  const processScan = async (qrString) => {
+  const processScan = async (payload) => {
+    const cleaned = (payload || '').toString().trim();
+    if (!cleaned) return;
+    setProcessing(true);
     try {
-      const result = await api.attendance.verifyQR(qrString, activeExamId);
+      const result = await api.qrCodes.scanStudent(cleaned, activeExamId || null);
       setScanResult(result);
-      if (result.verified) {
-        showToast(`Verified: ${result.student.firstName} ${result.student.lastName}`, 'success');
+      if (result?.verified) {
+        showToast(result.message || 'Student verified.', 'success');
       } else {
-        showToast(`Rejected: ${result.reason}`, 'error');
+        showToast(result?.reason || 'Verification failed.', 'error');
       }
-    } catch (e) {
-      showToast('Scan failed: Invalid token data', 'error');
-      setScanResult({
-        verified: false,
-        reason: 'Invalid QR',
-        student: null,
-        exam: null
-      });
+    } catch (err) {
+      const message = err.message || 'Scan request failed.';
+      setScanResult({ verified: false, reason: message, status: 'ERROR' });
+      showToast(message, 'error');
+    } finally {
+      setProcessing(false);
     }
   };
 
-  // Simulator helper: lets user test QR scan without physical camera
-  const handleSimulateScan = async () => {
-    if (!activeExamId) {
-      showToast('Please select the active exam course first.', 'warning');
-      return;
-    }
-    if (!simStudentId) {
-      showToast('Please select a student to simulate.', 'warning');
-      return;
-    }
-
-    const student = students.find(s => s.id === simStudentId);
-    let exam = exams.find(e => e.id === activeExamId);
-
-    if (simWrongExam) {
-      // Pick another active exam in DB to simulate scanning for the wrong code
-      const wrong = exams.find(e => e.id !== activeExamId);
-      if (wrong) exam = wrong;
-    }
-
-    // Set custom timestamp
-    let timestamp = new Date().toISOString();
-    if (simExpired) {
-      // Generate timestamp 2 hours ago
-      timestamp = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
-    }
-
-    const payload = {
-      studentId: student.id,
-      matricNumber: student.matricNumber,
-      examId: exam.id,
-      institutionId: 'INST-001',
-      timestamp
-    };
-
-    const simulatedQR = encodeQR(payload);
-    await processScan(simulatedQR);
+  const startScanning = async () => {
+    setScanResult(null);
+    setCameraError(null);
+    const ok = await requestCameraPermission();
+    if (ok) setScanning(true);
   };
 
-  const handleResetScanner = () => {
+  const handleReset = () => {
     setScanResult(null);
     setScanning(false);
+    setCameraError(null);
+    setManualPayload('');
+  };
+
+  const handleManualSubmit = async (e) => {
+    e.preventDefault();
+    if (!manualPayload.trim()) {
+      showToast('Paste an encrypted QR payload first.', 'warning');
+      return;
+    }
+    await processScan(manualPayload);
   };
 
   return (
@@ -159,224 +178,297 @@ export const Scanner = () => {
       <div className="flex items-center justify-between gap-4 border-b-4 border-black pb-4">
         <div>
           <h1 className="text-3xl font-black uppercase text-black m-0 tracking-wide">Staff Scanner</h1>
-          <p className="text-sm font-bold text-gray-500 uppercase mt-1">Manual override — Staff can verify student QR passes directly as a backup verification method.</p>
+          <p className="text-sm font-bold text-gray-500 uppercase mt-1">
+            Scan a student's QR code to verify their identity. Select an active exam to also record attendance.
+          </p>
         </div>
       </div>
 
       {loading ? (
         <div className="flat-card bg-white p-12 text-center border-black">
           <div className="w-10 h-10 border-4 border-t-flatBlue border-black rounded-full animate-spin mx-auto mb-4" />
-          <p className="font-extrabold text-sm uppercase text-gray-500">Loading Datastores...</p>
+          <p className="font-extrabold text-sm uppercase text-gray-500">Loading exam list...</p>
         </div>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          
-          {/* Column A & B: Scanner View & Results */}
+          {/* Scanner + Result */}
           <div className="lg:col-span-2 space-y-6">
-            
-            {/* Exam Selector (Required first) */}
+            {/* Exam selector (optional) */}
             <div className="flat-card bg-white">
-              <h3 className="font-black text-xs uppercase text-black mb-3">1. Select Active Exam to Audit</h3>
+              <h3 className="font-black text-xs uppercase text-black mb-3">
+                Select active exam (optional — for attendance recording)
+              </h3>
               <select
                 className="flat-select text-sm py-2.5"
                 value={activeExamId}
                 onChange={(e) => {
                   setActiveExamId(e.target.value);
-                  handleResetScanner();
+                  handleReset();
                 }}
               >
-                <option value="">-- Choose Course for Entrance Checkpoints --</option>
-                {exams.map(e => (
-                  <option key={e.id} value={e.id}>{e.courseCode} - {e.courseTitle} ({e.venue})</option>
+                <option value="">Identity check only (don't record attendance)</option>
+                {exams.map((e) => (
+                  <option key={e._id} value={e._id}>
+                    {e.courseCode} — {e.title} ({e.venue})
+                  </option>
                 ))}
               </select>
+              <p className="text-[10px] font-bold text-gray-500 uppercase mt-2 leading-snug">
+                Leaving this blank still shows the student's info, but nothing is written to attendance.
+              </p>
             </div>
 
-            {/* SCANNING & RESULT PANELS */}
-            {activeExamId && (
-              <div className="flat-card bg-white flex flex-col items-center">
-                
-                {/* Result display (Overlay/Block) */}
-                {scanResult ? (
-                  <div className="w-full text-center space-y-6">
-                    {/* Grant Header Indicator */}
-                    <div 
-                      className={`flat-border p-6 flex flex-col items-center text-white select-none ${
-                        scanResult.verified ? 'bg-flatEmerald' : 'bg-red-500'
-                      }`}
-                    >
-                      {scanResult.verified ? (
-                        <CheckCircle className="w-16 h-16 stroke-[2.5]" />
-                      ) : (
-                        <XCircle className="w-16 h-16 stroke-[2.5]" />
-                      )}
-                      <h2 className="text-3xl font-black uppercase mt-3 tracking-wide">
-                        {scanResult.verified ? 'ACCESS GRANTED' : 'ACCESS DENIED'}
-                      </h2>
-                      <span className="text-xs font-bold bg-black text-white px-3 py-1 mt-2 flat-border-sm uppercase border-white">
-                        Reason: {scanResult.reason}
-                      </span>
-                    </div>
+            {/* Scanner panel */}
+            <div className="flat-card bg-white flex flex-col items-center">
+              {processing ? (
+                <div className="w-full text-center py-16 flex flex-col items-center">
+                  <div className="w-16 h-16 border-4 border-t-flatBlue border-black rounded-full animate-spin mb-6" />
+                  <h3 className="text-xl font-black uppercase text-black">Verifying student...</h3>
+                </div>
+              ) : scanResult ? (
+                <div className="w-full text-center space-y-6">
+                  <div
+                    className={`flat-border p-6 flex flex-col items-center text-white select-none ${
+                      scanResult.verified ? 'bg-flatEmerald' : 'bg-red-500'
+                    }`}
+                  >
+                    {scanResult.verified ? (
+                      <CheckCircle className="w-16 h-16 stroke-[2.5]" />
+                    ) : (
+                      <XCircle className="w-16 h-16 stroke-[2.5]" />
+                    )}
+                    <h2 className="text-3xl font-black uppercase mt-3 tracking-wide">
+                      {scanResult.verified
+                        ? scanResult.status === 'VERIFIED'
+                          ? 'Attendance Recorded'
+                          : 'Identity Confirmed'
+                        : 'Verification Failed'}
+                    </h2>
+                    <span className="text-xs font-bold bg-black text-white px-3 py-1 mt-2 flat-border-sm uppercase border-white max-w-full break-words">
+                      {scanResult.verified
+                        ? scanResult.message || 'Student verified.'
+                        : scanResult.reason}
+                    </span>
+                  </div>
 
-                    {/* Student details display */}
-                    {scanResult.student && (
-                      <div className="flex flex-col md:flex-row items-center md:items-start gap-6 p-4 text-left border-2 border-black bg-gray-50">
-                        {scanResult.student.passportPhoto && (
-                          <img
-                            src={scanResult.student.passportPhoto}
-                            alt="Student Passport"
-                            className="w-24 h-24 border-4 border-black object-cover shrink-0 mx-auto md:mx-0"
-                          />
-                        )}
-                        <div className="space-y-2 flex-1">
-                          <h3 className="font-black text-lg uppercase text-black leading-tight">
-                            {scanResult.student.lastName}, {scanResult.student.firstName}
-                          </h3>
-                          <span className="flat-badge bg-white text-xs border-2 py-0.5 px-2 font-black uppercase border-black">
-                            Matric: {scanResult.student.matricNumber}
+                  {scanResult.student && (
+                    <div className="flex flex-col md:flex-row items-center md:items-start gap-6 p-4 text-left border-2 border-black bg-gray-50">
+                      {resolveMediaUrl(scanResult.student.passportPhoto || scanResult.student.photo) ? (
+                        <img
+                          src={resolveMediaUrl(scanResult.student.passportPhoto || scanResult.student.photo)}
+                          alt="Student"
+                          className="w-28 h-32 border-4 border-black object-cover shrink-0 mx-auto md:mx-0"
+                        />
+                      ) : (
+                        <div className="w-28 h-32 border-4 border-black bg-white flex items-center justify-center shrink-0 mx-auto md:mx-0">
+                          <User className="w-10 h-10 text-gray-400" />
+                        </div>
+                      )}
+                      <div className="space-y-2 flex-1">
+                        <h3 className="font-black text-lg uppercase text-black leading-tight">
+                          {scanResult.student.name || `${scanResult.student.lastName}, ${scanResult.student.firstName}`}
+                        </h3>
+                        <span className="flat-badge bg-white text-xs border-2 py-0.5 px-2 font-black uppercase border-black inline-block">
+                          Matric: {scanResult.student.matricNumber}
+                        </span>
+                        <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] font-extrabold text-gray-500 uppercase pt-2 border-t border-gray-300">
+                          <div>
+                            DEPT:{' '}
+                            <span className="text-black font-black">{scanResult.student.department}</span>
+                          </div>
+                          <div>
+                            LEVEL:{' '}
+                            <span className="text-black font-black">{scanResult.student.level}</span>
+                          </div>
+                          {scanResult.student.faculty && (
+                            <div>
+                              FACULTY:{' '}
+                              <span className="text-black font-black">{scanResult.student.faculty}</span>
+                            </div>
+                          )}
+                          {scanResult.student.status && (
+                            <div>
+                              STATUS:{' '}
+                              <span className="text-black font-black">{scanResult.student.status}</span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {scanResult.exam && (
+                    <div className="p-4 text-left border-2 border-black bg-gray-50 space-y-1 font-bold text-xs text-gray-600">
+                      <h4 className="font-black uppercase text-black text-xs border-b border-gray-300 pb-1 mb-2 flex items-center gap-1.5">
+                        <BookOpen className="w-4 h-4 text-flatBlue" />
+                        Exam
+                      </h4>
+                      <div className="flex justify-between">
+                        <span>Course</span>
+                        <span className="font-extrabold text-black uppercase">
+                          {scanResult.exam.courseCode} — {scanResult.exam.title}
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Venue</span>
+                        <span className="font-extrabold text-black">{scanResult.exam.venue}</span>
+                      </div>
+                      {scanResult.attendance?.verifiedAt && (
+                        <div className="flex justify-between">
+                          <span>Verified At</span>
+                          <span className="font-extrabold text-flatBlue font-mono">
+                            {new Date(scanResult.attendance.verifiedAt).toLocaleString()}
                           </span>
-                          <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] font-extrabold text-gray-500 uppercase pt-2 border-t border-gray-300">
-                            <div>DEPT: <span className="text-black font-black">{scanResult.student.department}</span></div>
-                            <div>LEVEL: <span className="text-black font-black">{scanResult.student.level}</span></div>
-                            <div>GENDER: <span className="text-black font-black">{scanResult.student.gender}</span></div>
-                            <div>STATUS: <span className="text-black font-black">{scanResult.student.status}</span></div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  <button
+                    onClick={handleReset}
+                    className="w-full flat-btn bg-black text-white hover:scale-102 flex items-center justify-center gap-2 py-3 cursor-pointer"
+                  >
+                    <RotateCcw className="w-5 h-5" />
+                    Scan Next Student
+                  </button>
+                </div>
+              ) : (
+                <div className="w-full flex flex-col items-center py-4">
+                  {scanning ? (
+                    <div className="w-full max-w-[340px] md:max-w-md flex flex-col items-center">
+                      <div id="qr-reader" className="w-full flat-border border-black bg-black overflow-hidden" />
+                      <button
+                        onClick={() => setScanning(false)}
+                        className="flat-btn-danger w-full mt-4 text-xs font-black cursor-pointer"
+                      >
+                        Cancel Camera Scan
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="text-center py-12 flex flex-col items-center space-y-4">
+                      <div className="w-24 h-24 bg-gray-100 border-4 border-dashed border-black flex items-center justify-center relative">
+                        <Camera className="w-12 h-12 text-gray-600" />
+                        <div className="absolute -top-2 -right-2 w-6 h-6 bg-flatBlue border-2 border-black flex items-center justify-center">
+                          <ScanLine className="w-3.5 h-3.5 text-white stroke-[3]" />
+                        </div>
+                      </div>
+                      <h3 className="text-xl font-black uppercase text-black">Ready to scan</h3>
+                      <p className="text-xs font-bold text-gray-500 max-w-sm uppercase leading-snug px-4">
+                        Point your camera at the student's QR code (from the Student app or a printed pass).
+                      </p>
+
+                      {cameraError && (
+                        <div className="w-full max-w-sm bg-red-50 border-2 border-red-500 p-4 text-left space-y-2">
+                          <div className="flex items-start gap-2">
+                            <AlertCircle className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
+                            <div>
+                              <h4 className="text-xs font-black text-red-700 uppercase">Camera Access Error</h4>
+                              <p className="text-[11px] font-bold text-red-600 mt-1 leading-snug">
+                                {cameraError}
+                              </p>
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    )}
+                      )}
 
-                    {/* Exam scheduled details */}
-                    {scanResult.exam && (
-                      <div className="p-4 text-left border-2 border-black bg-gray-50 space-y-1 font-bold text-xs text-gray-600">
-                        <h4 className="font-black uppercase text-black text-xs border-b border-gray-300 pb-1 mb-2">Verified Exam Schedule</h4>
-                        <div className="flex justify-between"><span>Course</span><span className="font-extrabold text-black uppercase">{scanResult.exam.courseCode} - {scanResult.exam.courseTitle}</span></div>
-                        <div className="flex justify-between"><span>Venue</span><span className="font-extrabold text-black">{scanResult.exam.venue}</span></div>
-                        <div className="flex justify-between"><span>Check-in Time</span><span className="font-extrabold text-flatBlue font-mono">{scanResult.checkInTime ? new Date(scanResult.checkInTime).toLocaleString() : 'N/A'}</span></div>
-                      </div>
-                    )}
+                      <button
+                        onClick={startScanning}
+                        className="flat-btn-blue text-sm font-black px-10 py-4 cursor-pointer"
+                      >
+                        <Camera className="w-5 h-5 stroke-[2.5]" />
+                        {cameraError ? 'Retry Camera Scanner' : 'Start Camera Scanner'}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
 
-                    {/* Reset Button */}
-                    <button
-                      onClick={handleResetScanner}
-                      className="w-full flat-btn bg-black text-white hover:scale-102 flex items-center justify-center gap-2 py-3"
-                    >
-                      <RotateCcw className="w-5 h-5" />
-                      Scan Next Student
-                    </button>
-                  </div>
-                ) : (
-                  // Webcam Scanner Stream View
-                  <div className="w-full flex flex-col items-center py-4">
-                    {scanning ? (
-                      <div className="w-full max-w-[300px] md:max-w-sm flex flex-col items-center">
-                        {/* Video Viewport */}
-                        <div id="qr-reader" className="w-full flat-border border-black bg-black overflow-hidden aspect-square" />
-                        
-                        <button
-                          onClick={() => setScanning(false)}
-                          className="flat-btn-danger w-full mt-4 text-xs font-black"
-                        >
-                          Cancel Camera Scan
-                        </button>
-                      </div>
-                    ) : (
-                      <div className="text-center py-12 flex flex-col items-center space-y-4">
-                        <div className="w-20 h-20 bg-gray-100 border-4 border-dashed border-black flex items-center justify-center">
-                          <Camera className="w-10 h-10 text-gray-600" />
-                        </div>
-                        <h3 className="text-lg font-black uppercase text-black">Ready to manually verify student</h3>
-                        <p className="text-xs font-bold text-gray-500 max-w-xs uppercase leading-snug">
-                          Use this as a backup — scan a student's QR pass to manually verify their identity at the exam hall entrance.
-                        </p>
-                        <button
-                          onClick={() => setScanning(true)}
-                          className="flat-btn-blue text-sm font-black px-8 py-3.5"
-                        >
-                          Start Scanning View
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                )}
+            {/* Manual paste fallback */}
+            {!scanResult && !scanning && !processing && (
+              <div className="flat-card bg-white space-y-3">
+                <h4 className="font-black text-xs uppercase text-black border-b-2 border-black pb-2 flex items-center gap-1.5">
+                  <Info className="w-4 h-4 text-flatBlue" />
+                  Manual Payload (Backup)
+                </h4>
+                <p className="text-[10px] font-bold text-gray-500 uppercase leading-snug">
+                  Paste the encrypted QR payload directly. Useful when the camera is unavailable.
+                </p>
+                <form onSubmit={handleManualSubmit} className="flex flex-col md:flex-row gap-2">
+                  <input
+                    type="text"
+                    className="flat-input text-xs py-2 font-mono flex-1"
+                    placeholder="Paste encrypted payload..."
+                    value={manualPayload}
+                    onChange={(e) => setManualPayload(e.target.value)}
+                  />
+                  <button
+                    type="submit"
+                    className="flat-btn bg-black text-white hover:scale-102 py-2 px-4 text-xs font-black uppercase cursor-pointer"
+                  >
+                    Verify
+                  </button>
+                </form>
               </div>
             )}
           </div>
 
-          {/* Column C: QR Simulator (DEMO UTILITY) */}
+          {/* Info / rules */}
           <div className="space-y-6">
             <div className="flat-card bg-white space-y-4">
-              <h3 className="font-black text-lg uppercase border-b-4 border-black pb-3 text-black flex items-center gap-1.5">
-                <Play className="w-5 h-5 text-flatBlue" />
-                Demo Simulator
+              <h3 className="font-black text-sm uppercase border-b-2 border-black pb-2 text-black flex items-center gap-1.5">
+                <ScanLine className="w-4 h-4 text-flatBlue" />
+                How to scan
               </h3>
-              <p className="text-xs font-bold text-gray-500 uppercase leading-snug">
-                Audit access control policies offline. Selecting a mock student generates a simulated scan token instantly.
-              </p>
-
-              {/* Select student to mock */}
-              <div className="space-y-3 pt-2">
-                <div>
-                  <label className="block text-[10px] font-black uppercase text-gray-500 mb-1">Simulate Student</label>
-                  <select
-                    className="flat-select text-xs py-2 bg-no-repeat"
-                    value={simStudentId}
-                    onChange={(e) => setSimStudentId(e.target.value)}
-                  >
-                    <option value="">-- Choose Mock Student --</option>
-                    {students.map(s => (
-                      <option key={s.id} value={s.id}>
-                        {s.lastName}, {s.firstName} ({s.status} - {s.matricNumber})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                {/* Simulation Rule Options */}
-                <div className="space-y-2 pt-2">
-                  <label className="flex items-center gap-2 font-extrabold text-xs text-black cursor-pointer">
-                    <input
-                      type="checkbox"
-                      className="flat-border-sm w-4 h-4 border-black rounded-none shrink-0"
-                      checked={simExpired}
-                      onChange={(e) => setSimExpired(e.target.checked)}
-                    />
-                    <span>SIMULATE EXPIRED QR PASS</span>
-                  </label>
-                  <label className="flex items-center gap-2 font-extrabold text-xs text-black cursor-pointer">
-                    <input
-                      type="checkbox"
-                      className="flat-border-sm w-4 h-4 border-black rounded-none shrink-0"
-                      checked={simWrongExam}
-                      onChange={(e) => setSimWrongExam(e.target.checked)}
-                    />
-                    <span>SIMULATE WRONG EXAM PASS</span>
-                  </label>
-                </div>
-
-                <button
-                  onClick={handleSimulateScan}
-                  className="w-full flat-btn bg-black text-white hover:scale-102 font-black py-2.5 mt-4 flex items-center justify-center gap-2 uppercase text-xs cursor-pointer"
-                >
-                  <Play className="w-4 h-4" />
-                  Simulate QR scan
-                </button>
-              </div>
+              <ol className="space-y-3 text-[11px] font-bold text-gray-600 uppercase leading-snug">
+                <li className="flex items-start gap-2">
+                  <span className="flat-border-sm bg-black text-white w-5 h-5 flex items-center justify-center shrink-0 font-black text-[9px]">
+                    1
+                  </span>
+                  <span>Choose an active exam if you want to record attendance.</span>
+                </li>
+                <li className="flex items-start gap-2">
+                  <span className="flat-border-sm bg-black text-white w-5 h-5 flex items-center justify-center shrink-0 font-black text-[9px]">
+                    2
+                  </span>
+                  <span>Tap <span className="text-black font-black">Start Camera Scanner</span>.</span>
+                </li>
+                <li className="flex items-start gap-2">
+                  <span className="flat-border-sm bg-black text-white w-5 h-5 flex items-center justify-center shrink-0 font-black text-[9px]">
+                    3
+                  </span>
+                  <span>Point the camera at the student's QR — the student's name, matric, and photo will appear on this screen.</span>
+                </li>
+              </ol>
             </div>
 
-            {/* Verification Reasons Info */}
-            <div className="flat-card bg-gray-50 border-black space-y-4">
-              <h4 className="font-black text-xs uppercase text-black border-b-2 border-black pb-2">Verification Rules</h4>
+            <div className="flat-card bg-gray-50 border-black space-y-3">
+              <h4 className="font-black text-xs uppercase text-black border-b-2 border-black pb-2 flex items-center gap-1.5">
+                <AlertCircle className="w-4 h-4 text-flatBlue" />
+                Verification results
+              </h4>
               <ul className="space-y-2 text-[10px] font-bold text-gray-500 uppercase leading-snug">
-                <li><span className="text-flatEmerald font-black">✔ Green Verified:</span> Access granted. Student credentials match scheduled course, account is active, pass timestamp valid.</li>
-                <li><span className="text-red-500 font-black">✖ Invalid QR:</span> QR payload corrupt or invalid signature checksum.</li>
-                <li><span className="text-red-500 font-black">✖ Expired QR:</span> Passes expire after 30 minutes.</li>
-                <li><span className="text-red-500 font-black">✖ Already Used:</span> Double-entry prevention. Token has already been scanned.</li>
-                <li><span className="text-red-500 font-black">✖ Wrong Exam:</span> Student is trying to check into an exam they are not registered/audited for today.</li>
-                <li><span className="text-red-500 font-black">✖ Suspended Student:</span> Admin suspended credentials. Access denied.</li>
+                <li>
+                  <span className="text-flatEmerald font-black">Identity Confirmed:</span> Student matched. No exam selected — attendance is NOT recorded.
+                </li>
+                <li>
+                  <span className="text-flatEmerald font-black">Attendance Recorded:</span> Student matched and marked present for the selected exam.
+                </li>
+                <li>
+                  <span className="text-red-500 font-black">Not Registered:</span> Student isn't enrolled in the selected exam.
+                </li>
+                <li>
+                  <span className="text-red-500 font-black">Already Verified:</span> Student was already recorded for this exam.
+                </li>
+                <li>
+                  <span className="text-red-500 font-black">Expired / Revoked:</span> QR is no longer valid — ask the student to regenerate.
+                </li>
+                <li>
+                  <span className="text-red-500 font-black">Wrong Institution:</span> QR belongs to a different institution.
+                </li>
               </ul>
             </div>
           </div>
-          
         </div>
       )}
     </div>

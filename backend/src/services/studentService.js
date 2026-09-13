@@ -1,4 +1,5 @@
 const studentRepository = require('../repositories/studentRepository');
+const institutionRepository = require('../repositories/institutionRepository');
 const auditLogService = require('./auditLogService');
 const emailService = require('./emailService');
 const { generateUsername, generateTempPassword } = require('../utils/passwordGenerator');
@@ -8,9 +9,10 @@ const logger = require('../utils/logger');
 
 class StudentService {
   /**
-   * Create a single student with auto-generated credentials
+   * Create a single student with auto-generated credentials.
+   * `passportPhotoPath` is provided by the upload middleware (optional).
    */
-  async createStudent(data, institutionId, createdByUserId) {
+  async createStudent(data, institutionId, createdByUserId, passportPhotoPath = null) {
     // Check if matric number already exists in this institution
     const existing = await studentRepository.findByMatricNumber(data.matricNumber, institutionId);
     if (existing) {
@@ -27,6 +29,7 @@ class StudentService {
       institutionId,
       username,
       passwordHash: tempPassword, // Will be hashed by pre-save hook
+      passportPhoto: passportPhotoPath || data.passportPhoto || null,
     });
 
     // Log audit
@@ -45,11 +48,13 @@ class StudentService {
 
     // Send credentials email if student has email
     if (data.email) {
+      const institution = await institutionRepository.findById(institutionId);
       await emailService.sendStudentCredentials(
         data.email,
         data.firstName,
         username,
-        tempPassword
+        tempPassword,
+        institution?.name || ''
       );
     }
 
@@ -91,6 +96,8 @@ class StudentService {
       errors: [],
       credentials: [],
     };
+
+    const institution = await institutionRepository.findById(institutionId);
 
     for (let i = 0; i < records.length; i++) {
       try {
@@ -137,6 +144,19 @@ class StudentService {
           username,
           temporaryPassword: tempPassword,
         });
+
+        if (record.email) {
+          // Fire-and-forget — bulk import shouldn't block on SMTP.
+          emailService
+            .sendStudentCredentials(
+              record.email,
+              record.firstName,
+              username,
+              tempPassword,
+              institution?.name || ''
+            )
+            .catch(() => {});
+        }
       } catch (error) {
         results.failed++;
         results.errors.push({
@@ -171,7 +191,7 @@ class StudentService {
    * Get paginated students list with filters
    */
   async getStudents(institutionId, queryParams) {
-    const { page, limit, sort, skip } = parsePaginationQuery(queryParams);
+    const { page, limit, sort } = parsePaginationQuery(queryParams);
 
     const query = await studentRepository.findByInstitution(institutionId, {
       search: queryParams.search,
@@ -212,15 +232,19 @@ class StudentService {
   }
 
   /**
-   * Update student
+   * Update student (institution-side). Accepts optional new passport photo.
    */
-  async updateStudent(studentId, data, institutionId, userId) {
-    const student = await this.getStudentById(studentId, institutionId);
+  async updateStudent(studentId, data, institutionId, userId, passportPhotoPath = null) {
+    await this.getStudentById(studentId, institutionId);
 
-    // Don't allow changing username or password through this method
+    // Don't allow changing username, password, or moving between institutions
     delete data.username;
     delete data.passwordHash;
     delete data.institutionId;
+
+    if (passportPhotoPath) {
+      data.passportPhoto = passportPhotoPath;
+    }
 
     const updated = await studentRepository.update(studentId, data);
 
@@ -253,6 +277,28 @@ class StudentService {
       userId,
       userType: 'user',
       action: `STUDENT_${status.toUpperCase()}`,
+      resource: 'Student',
+      resourceId: studentId,
+      institutionId,
+    });
+
+    return updated;
+  }
+
+  /**
+   * Institution-only: update just the student's passport photo.
+   */
+  async updateStudentPhoto(studentId, filePath, institutionId, userId) {
+    await this.getStudentById(studentId, institutionId);
+
+    const updated = await studentRepository.update(studentId, {
+      passportPhoto: filePath,
+    });
+
+    await auditLogService.log({
+      userId,
+      userType: 'user',
+      action: 'STUDENT_PHOTO_UPDATED',
       resource: 'Student',
       resourceId: studentId,
       institutionId,
@@ -317,10 +363,10 @@ class StudentService {
   }
 
   /**
-   * Update student's own profile
+   * Update student's own profile — students may only edit their contact info.
+   * Passport photo is NOT changeable by the student (institution-controlled).
    */
   async updateStudentProfile(studentId, data) {
-    // Students can only update limited fields
     const allowed = ['phone', 'email'];
     const filtered = {};
     allowed.forEach((key) => {
@@ -328,15 +374,6 @@ class StudentService {
     });
 
     return studentRepository.update(studentId, filtered);
-  }
-
-  /**
-   * Update student passport photo
-   */
-  async updatePassportPhoto(studentId, filePath) {
-    return studentRepository.update(studentId, {
-      passportPhoto: filePath,
-    });
   }
 
   /**

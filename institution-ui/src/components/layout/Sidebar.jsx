@@ -22,7 +22,7 @@ export const Sidebar = ({ mobileOpen, setMobileOpen }) => {
     { name: 'Dashboard', path: '/', icon: <LayoutDashboard className="w-5 h-5" /> },
     { name: 'Students', path: '/students', icon: <Users className="w-5 h-5" /> },
     { name: 'Exams', path: '/exams', icon: <BookOpen className="w-5 h-5" /> },
-    { name: 'QR Code Engine', path: '/qr-management', icon: <QrCode className="w-5 h-5" /> },
+    { name: 'QR Registry', path: '/qr-management', icon: <QrCode className="w-5 h-5" /> },
     { name: 'QR Scanner', path: '/scanner', icon: <ScanLine className="w-5 h-5" /> },
     { name: 'Attendance', path: '/attendance', icon: <CalendarCheck className="w-5 h-5" /> },
     { name: 'Reports', path: '/reports', icon: <FileBarChart2 className="w-5 h-5" /> },

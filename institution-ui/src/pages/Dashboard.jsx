@@ -68,14 +68,21 @@ export const Dashboard = () => {
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const studentList = await api.students.list(user.id);
-        const examList = await api.exams.list();
-        const attendanceList = await api.attendance.list();
-        const logs = await api.auditLogs.list();
+        const [studentRes, examRes, attendanceRes] = await Promise.all([
+          api.students.list({ limit: 1000 }),
+          api.exams.list({ limit: 1000 }),
+          api.attendance.list({ limit: 1000 }),
+        ]);
+        const logsRes = await api.auditLogs.list({ limit: 100 });
 
-        const activeExams = examList.filter(e => e.status === 'Active').length;
+        const studentList = Array.isArray(studentRes) ? studentRes : studentRes?.students || [];
+        const examList = Array.isArray(examRes) ? examRes : examRes?.exams || [];
+        const attendanceList = Array.isArray(attendanceRes) ? attendanceRes : attendanceRes?.records || [];
+        const logs = Array.isArray(logsRes) ? logsRes : logsRes?.logs || logsRes?.records || [];
+
+        const activeExams = examList.filter((e) => e.status === 'active' || e.status === 'Active').length;
         const totalStuds = studentList.length;
-        const todayAtt = attendanceList.length; // simplified simulation
+        const todayAtt = attendanceList.length;
         
         // Let's assume some calculations for absent:
         // Absent = Computer Science students (STUD-001 & STUD-003 are CSC/MTH active) - checked in today
@@ -89,7 +96,26 @@ export const Dashboard = () => {
           absentStudents: absent
         });
 
-        setActivities(logs.slice(0, 5));
+        // Normalize audit log rows so the "Recent Audits" list has a
+        // consistent shape regardless of backend field names.
+        const normalizedLogs = logs.map((raw) => {
+          const details =
+            raw?.details && typeof raw.details === 'object'
+              ? Object.entries(raw.details)
+                  .map(([k, v]) => `${k}=${typeof v === 'object' ? JSON.stringify(v) : v}`)
+                  .join(', ')
+              : '';
+          return {
+            id: raw._id || raw.id,
+            activityType: raw.action || raw.activityType || 'ACTIVITY',
+            description:
+              raw.description ||
+              [raw.resource, details].filter(Boolean).join(' • ') ||
+              'System event',
+            timestamp: raw.createdAt || raw.timestamp || null,
+          };
+        });
+        setActivities(normalizedLogs.slice(0, 5));
       } catch (err) {
         console.error('Error fetching dashboard statistics:', err);
       } finally {
@@ -235,7 +261,7 @@ export const Dashboard = () => {
                   <div>
                     <p className="font-extrabold text-sm text-black">{act.description}</p>
                     <span className="text-[10px] font-bold text-gray-500 uppercase mt-0.5 block">
-                      {new Date(act.timestamp).toLocaleString()}
+                      {act.timestamp ? new Date(act.timestamp).toLocaleString() : '—'}
                     </span>
                   </div>
                   <span className="flat-border-sm bg-gray-100 text-black px-2 py-0.5 text-[9px] font-black uppercase tracking-wider shrink-0 select-none">
