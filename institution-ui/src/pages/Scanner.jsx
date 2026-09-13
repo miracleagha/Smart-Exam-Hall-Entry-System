@@ -232,6 +232,16 @@ export const Scanner = () => {
     setStarting(true);
     setDecodeAttempts(0);
 
+    // CRITICAL: wait for React to commit the DOM before html5-qrcode
+    // measures the container. The container is `display: none` (Tailwind's
+    // `hidden`) until `starting` becomes true. If we call `start()` before
+    // React has painted, the library sees a 0×0 element, sets the qrbox to
+    // 0, and even though the camera stream starts, no video ever renders.
+    // Two rAFs guarantees we're past the next paint on every browser.
+    await new Promise((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(resolve));
+    });
+
     // Ensure we have a camera to use.
     let camId = selectedCameraId;
     if (!camId) {
@@ -242,6 +252,17 @@ export const Scanner = () => {
     if (!camId) {
       setCameraError(
         'No camera detected. Please connect a camera and allow browser access, or use the manual payload option below.'
+      );
+      setStarting(false);
+      return;
+    }
+
+    // Sanity-check: container is actually laid out before we hand it to
+    // html5-qrcode. Guards against edge cases where a parent is still 0-width.
+    const el = document.getElementById(SCANNER_ELEMENT_ID);
+    if (!el || el.clientWidth === 0 || el.clientHeight === 0) {
+      setCameraError(
+        'Scanner container failed to mount. Please try again — if this persists, reload the page.'
       );
       setStarting(false);
       return;
@@ -264,7 +285,9 @@ export const Scanner = () => {
       fps: 15,
       qrbox: (viewfinderWidth, viewfinderHeight) => {
         const minEdge = Math.min(viewfinderWidth, viewfinderHeight);
-        const size = Math.floor(minEdge * 0.75);
+        // Clamp to a sensible minimum so extremely small containers still
+        // produce a usable scan window.
+        const size = Math.max(150, Math.floor(minEdge * 0.75));
         return { width: size, height: size };
       },
       aspectRatio: 1.0,
@@ -682,16 +705,28 @@ export const Scanner = () => {
                 </div>
               ) : (
                 <div className="w-full flex flex-col items-center py-4">
-                  {/* Camera preview area — always rendered so html5-qrcode can attach */}
+                  {/*
+                    Camera preview area.
+                    IMPORTANT: the container must be visible with real
+                    dimensions BEFORE html5-qrcode.start() is called, so it
+                    unhides on either `scanning` OR `starting`. Failing this
+                    is what caused the "camera on but nothing displays" bug.
+                  */}
                   <div className="w-full max-w-[420px] flex flex-col items-center">
                     <div
                       id={SCANNER_ELEMENT_ID}
                       className={`w-full flat-border border-black bg-black overflow-hidden relative ${
-                        scanning ? 'aspect-square' : 'hidden'
+                        scanning || starting ? 'aspect-square' : 'hidden'
                       }`}
+                      // Fallback inline sizing so the container has non-zero
+                      // dimensions the moment it renders, even before Tailwind
+                      // classes are applied.
+                      style={
+                        scanning || starting ? { minHeight: 280 } : undefined
+                      }
                     />
 
-                    {!scanning && (
+                    {!scanning && !starting && (
                       <div className="text-center py-8 flex flex-col items-center space-y-4">
                         <div className="w-24 h-24 bg-gray-100 border-4 border-dashed border-black flex items-center justify-center relative">
                           <Camera className="w-12 h-12 text-gray-600" />
@@ -722,21 +757,8 @@ export const Scanner = () => {
                       </div>
                     )}
 
-                    {/* Start / Stop buttons */}
-                    {!scanning ? (
-                      <button
-                        onClick={startScanner}
-                        disabled={starting}
-                        className="flat-btn-blue text-sm font-black px-10 py-4 mt-4 w-full cursor-pointer disabled:opacity-60"
-                      >
-                        <Play className="w-5 h-5 stroke-[2.5]" />
-                        {starting
-                          ? 'Starting camera...'
-                          : cameraError
-                          ? 'Retry Camera'
-                          : 'Start Camera Scanner'}
-                      </button>
-                    ) : (
+                    {/* Start / Stop / Starting controls */}
+                    {scanning ? (
                       <div className="w-full space-y-2 mt-4">
                         <div className="flat-border bg-black text-white px-4 py-2 flex items-center justify-between text-xs font-black uppercase">
                           <span className="flex items-center gap-2">
@@ -755,6 +777,19 @@ export const Scanner = () => {
                           Stop Scanner
                         </button>
                       </div>
+                    ) : starting ? (
+                      <div className="w-full flat-border bg-black text-white px-4 py-3 mt-4 flex items-center justify-center gap-2 text-xs font-black uppercase">
+                        <div className="w-4 h-4 border-2 border-t-transparent border-white rounded-full animate-spin" />
+                        Requesting camera...
+                      </div>
+                    ) : (
+                      <button
+                        onClick={startScanner}
+                        className="flat-btn-blue text-sm font-black px-10 py-4 mt-4 w-full cursor-pointer disabled:opacity-60"
+                      >
+                        <Play className="w-5 h-5 stroke-[2.5]" />
+                        {cameraError ? 'Retry Camera' : 'Start Camera Scanner'}
+                      </button>
                     )}
                   </div>
                 </div>
