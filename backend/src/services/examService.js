@@ -155,26 +155,22 @@ class ExamService {
     return examRepository.findRegisteredForStudent(institutionId, studentId);
   }
 
+  // eslint-disable-next-line no-unused-vars
   async registerStudentForExam(studentId, examId, institutionId, department, level) {
     const exam = await examRepository.findById(examId);
     if (!exam) throw new AppError('Exam not found.', 404);
     if (exam.institutionId.toString() !== institutionId.toString()) {
       throw new AppError('This exam does not belong to your institution.', 403);
     }
-    if (!['upcoming', 'active'].includes(exam.status)) {
+    if (['completed', 'archived'].includes(exam.status)) {
       throw new AppError('Registration is closed for this exam.', 400);
     }
-
-    // Auto-approval, but still restrict to the exam's target department + level
-    // so students can't register for exams outside their programme.
-    const norm = (v) => (v || '').toString().trim().toLowerCase().replace(/\s+/g, ' ');
-    const digits = (v) => (v || '').toString().replace(/\D/g, '');
-    const deptMatch = norm(department) === norm(exam.department);
-    const levelMatch =
-      norm(level) === norm(exam.level) ||
-      (!!digits(exam.level) && digits(level) === digits(exam.level));
-    if (!deptMatch || !levelMatch) {
-      throw new AppError('This exam is not offered to your department/level.', 403);
+    // Also enforce the "date hasn't passed" rule so a stale 'upcoming' exam
+    // whose day has come and gone can't be registered for.
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    if (exam.examDate && new Date(exam.examDate) < startOfToday) {
+      throw new AppError('This exam has already passed.', 400);
     }
 
     const alreadyRegistered = await examRepository.isStudentRegistered(examId, studentId);

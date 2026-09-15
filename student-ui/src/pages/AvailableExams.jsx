@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../services/api';
-import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import {
   BookOpen,
@@ -16,7 +15,6 @@ import {
 } from 'lucide-react';
 
 export const AvailableExams = () => {
-  const { user } = useAuth();
   const { showToast } = useToast();
 
   const [exams, setExams] = useState([]);
@@ -85,13 +83,12 @@ export const AvailableExams = () => {
         </button>
       </div>
 
-      {/* Notice explaining how the list is filtered — makes empty states less confusing. */}
+      {/* Notice: every exam whose date hasn't passed is listed. */}
       <div className="flat-card bg-blue-50 border-black p-3 flex items-start gap-3">
         <Info className="w-4 h-4 text-flatBlue shrink-0 mt-0.5" />
         <p className="text-[11px] font-bold text-gray-700 uppercase leading-snug">
-          Matched to <span className="text-black font-black">{user?.department || '—'}</span> /{' '}
-          <span className="text-black font-black">{user?.level || '—'}</span>. If your details look
-          wrong, ask your institution admin to update them.
+          Every exam posted by your institution whose date hasn't passed is listed here — sorted
+          by the earliest one first. Tap register on the ones you plan to sit.
         </p>
       </div>
 
@@ -105,8 +102,8 @@ export const AvailableExams = () => {
           <FileX className="w-16 h-16 mx-auto mb-4 text-gray-400" />
           <h3 className="text-xl font-black uppercase text-black">No Exams Available</h3>
           <p className="text-xs font-bold text-gray-500 uppercase mt-1 max-w-md mx-auto leading-snug">
-            No exams matching your department and level are open right now. Once your institution
-            schedules one, it will show up here.
+            Your institution hasn't posted any upcoming exams yet, or you've already registered
+            for everything on the calendar. Check back later.
           </p>
         </div>
       ) : (

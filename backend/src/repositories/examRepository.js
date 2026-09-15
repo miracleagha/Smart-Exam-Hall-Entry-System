@@ -48,6 +48,10 @@ class ExamRepository {
     return query;
   }
 
+  /**
+   * Exams the student is registered for AND are currently active
+   * (in progress today).
+   */
   async findActiveForStudent(institutionId, studentId) {
     return Exam.find({
       institutionId,
@@ -56,64 +60,60 @@ class ExamRepository {
     }).sort('examDate');
   }
 
+  /**
+   * Exams the student is registered for that haven't happened yet.
+   * Sorted earliest-first so the very next exam shows on top.
+   *
+   * We don't strictly require `status: 'upcoming'` — the date is the source
+   * of truth so an exam whose status was left as 'active' still surfaces
+   * here as long as its date is today or later. Completed/archived exams
+   * are always excluded.
+   */
   async findUpcomingForStudent(institutionId, studentId) {
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
     return Exam.find({
       institutionId,
       registeredStudents: studentId,
-      status: 'upcoming',
-      examDate: { $gte: new Date() },
+      status: { $nin: ['completed', 'archived'] },
+      examDate: { $gte: startOfToday },
     }).sort('examDate');
   }
 
+  /**
+   * Exams the student registered for that have already passed OR were
+   * marked completed/archived. Sorted most-recent-first.
+   */
   async findHistoryForStudent(institutionId, studentId) {
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
     return Exam.find({
       institutionId,
       registeredStudents: studentId,
-      status: { $in: ['completed', 'archived'] },
+      $or: [
+        { status: { $in: ['completed', 'archived'] } },
+        { examDate: { $lt: startOfToday } },
+      ],
     }).sort('-examDate');
   }
 
+  /**
+   * Every exam the institution posted whose date hasn't passed and the
+   * student hasn't registered for yet. No department or level filtering —
+   * the student sees the full active catalogue and picks what they need.
+   *
+   * Sorted earliest-first so the most imminent exam is at the top.
+   */
+  // eslint-disable-next-line no-unused-vars
   async findAvailableForStudent(institutionId, studentId, department, level) {
-    // Exams the student is *eligible* to register for: same institution,
-    // department + level match (fuzzy, case-insensitive so trivial typing
-    // differences don't hide exams), still open (upcoming or active), not
-    // past, and the student hasn't already registered.
-    const escapeRegex = (v) => (v || '').toString().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const norm = (v) => (v || '').toString().trim();
-    const digits = (v) => (v || '').toString().replace(/\D/g, '');
-
-    const deptNorm = norm(department);
-    const levelNorm = norm(level);
-    const levelDigits = digits(level);
-
-    // If the student doesn't have a department/level configured, we can't
-    // reliably match exams — return nothing so the UI shows an empty state
-    // rather than misleading rows they can't actually register for.
-    if (!deptNorm || (!levelNorm && !levelDigits)) return [];
-
-    const query = {
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    return Exam.find({
       institutionId,
-      status: { $in: ['upcoming', 'active'] },
-      examDate: { $gte: new Date(new Date().setHours(0, 0, 0, 0)) },
+      status: { $nin: ['completed', 'archived'] },
+      examDate: { $gte: startOfToday },
       registeredStudents: { $ne: studentId },
-      // Case-insensitive whole-string match on department. User input is
-      // escaped so it can't be interpreted as a regex pattern.
-      department: new RegExp(`^\\s*${escapeRegex(deptNorm)}\\s*$`, 'i'),
-    };
-
-    if (levelDigits) {
-      // Match either the exact string case-insensitively OR any level value
-      // that contains the same numeric part (e.g. student "400" matches
-      // exam "400 Level").
-      query.$or = [
-        { level: new RegExp(`^\\s*${escapeRegex(levelNorm)}\\s*$`, 'i') },
-        { level: new RegExp(`(^|\\D)${levelDigits}(\\D|$)`) },
-      ];
-    } else {
-      query.level = new RegExp(`^\\s*${escapeRegex(levelNorm)}\\s*$`, 'i');
-    }
-
-    return Exam.find(query).sort('examDate');
+    }).sort('examDate');
   }
 
   async findRegisteredForStudent(institutionId, studentId) {
